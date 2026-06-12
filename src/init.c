@@ -308,6 +308,7 @@ static char *vp_name[] =
 	"ANTI_XENO_FLAG",
 	"ANTI_XENO_WORLD",
 	"ANTI_XENO_DEVEL",
+	"GOODS",
 	"XENO_MILITARY",
 	NULL
 };
@@ -976,6 +977,28 @@ static void init_campaign(game *g)
 		/* Loop over set aside cards for this player */
 		for (j = 0; j < g->camp->size[i]; j++)
 		{
+			/* Remember design (rotates with players) */
+			g->camp_status->order_d[i][j] = g->camp->order[i][j];
+
+			/* Check for random card */
+			if (!g->camp->order[i][j])
+			{
+				/* Add random card */
+				g->camp_status->index[i][j] = -1;
+				continue;
+			}
+
+			/* Resolve only the first entry (the start world)
+			 * eagerly; later entries resolve lazily at draw
+			 * time, which naturally handles the same design
+			 * being drawn again after a reshuffle */
+			if (j > 0)
+			{
+				/* Resolve at draw time */
+				g->camp_status->index[i][j] = -2;
+				continue;
+			}
+
 			/* Loop over cards in deck */
 			for (k = 0; k < g->deck_size; k++)
 			{
@@ -996,21 +1019,11 @@ static void init_campaign(game *g)
 				break;
 			}
 
-			/* Check for random card */
-			if (!g->camp->order[i][j])
-			{
-				/* Add random card */
-				g->camp_status->index[i][j] = -1;
-				continue;
-			}
-
 			/* Check for failure to find card */
 			if (k == g->deck_size)
 			{
-				/* Error */
-				fprintf(stderr, "Could not find enough %s.\n",
-				        g->camp->order[i][j]->name);
-				exit(1);
+				/* Resolve at draw time */
+				g->camp_status->index[i][j] = -2;
 			}
 		}
 

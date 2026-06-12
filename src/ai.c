@@ -251,6 +251,31 @@ typedef struct quick_discard
 quick_discard discard_list[MAX_PLAYER][MAX_DECK];
 
 /*
+ * Analyzer hook: if set, called once per candidate option considered
+ * during a choice in a real (non-simulated) game.
+ *
+ * list/num hold the option's card indices (or action codes for
+ * CHOICE_ACTION); special/num_special hold auxiliary items (e.g. start
+ * world, powers used).  score is the AI's evaluation (approximately the
+ * chooser's win probability, plus small tie-break terms).
+ */
+void (*ai_option_hook)(game *g, int who, int type, int list[], int num,
+                       int special[], int num_special, double score) = NULL;
+
+/*
+ * Record a candidate option's score if the analyzer hook is active.
+ */
+static void record_option(game *g, int who, int type, int list[], int num,
+                          int special[], int num_special, double score)
+{
+	/* Skip if no hook or simulated game */
+	if (!ai_option_hook || g->simulation) return;
+
+	/* Forward to hook */
+	ai_option_hook(g, who, type, list, num, special, num_special, score);
+}
+
+/*
  * Compare two quick discard entries.
  */
 static int cmp_quick_discard(const void *a, const void *b)
@@ -3668,11 +3693,40 @@ static void ai_choose_action_advanced(game *g, int who, int action[2], int one)
 		}
 	}
 
+	/* Record per-combo scores for analyzer */
+	if (ai_option_hook && !g->simulation && one != 1)
+	{
+		/* Loop over our action combinations */
+		for (act = 0; act < role.num_output; act++)
+		{
+			/* Get action pair */
+			int pair[2];
+			pair[0] = adv_combo[act][0];
+			pair[1] = adv_combo[act][1];
+
+			/* Skip illegal combinations */
+			if (!action_legal_adv(g, who, pair[0], pair[1]))
+				continue;
+
+			/* Record score, normalized by probability examined */
+			record_option(g, who, CHOICE_ACTION, pair, 2, NULL, 0,
+			              used > 0 ? scores[act] / used :
+			                         scores[act]);
+		}
+	}
+
 	/* Check for needing only one action so far */
 	if (one == 1)
 	{
+		/* Count of combos contributing to each action */
+		int act_counts[ROLE_OUT_EXP3];
+
 		/* Clear individual action scores */
-		for (i = 0; i < ROLE_OUT_EXP3; i++) act_scores[i] = 0.0;
+		for (i = 0; i < ROLE_OUT_EXP3; i++)
+		{
+			act_scores[i] = 0.0;
+			act_counts[i] = 0;
+		}
 
 		/* Loop over scores */
 		for (i = 0; i < role.num_output; i++)
@@ -3686,7 +3740,31 @@ static void ai_choose_action_advanced(game *g, int who, int action[2], int one)
 				{
 					/* Add score */
 					act_scores[j] += scores[i];
+
+					/* Count contributing combo */
+					act_counts[j]++;
 				}
+			}
+		}
+
+		/* Record per-action scores for analyzer */
+		if (ai_option_hook && !g->simulation)
+		{
+			/* Loop over single actions */
+			for (i = 0; i < ROLE_OUT_EXP3; i++)
+			{
+				/* Get action code */
+				int opt = role_out[i];
+
+				/* Skip actions with no evaluated combos */
+				if (!act_counts[i]) continue;
+
+				/* Record mean combo score */
+				record_option(g, who, CHOICE_ACTION, &opt, 1,
+				              NULL, 0,
+				              used > 0 ?
+				              act_scores[i] / act_counts[i] / used :
+				              act_scores[i] / act_counts[i]);
 			}
 		}
 
@@ -4178,6 +4256,25 @@ static void ai_choose_action(game *g, int who, int action[2], int one)
 	}
 	printf("\n");
 #endif
+
+	/* Record per-action scores for analyzer */
+	if (ai_option_hook && !g->simulation)
+	{
+		/* Loop over possible actions */
+		for (i = 0; i < role.num_output; i++)
+		{
+			/* Get action code */
+			int opt = role_out[i];
+
+			/* Skip illegal actions */
+			if (!action_legal(g, who, opt)) continue;
+
+			/* Record score, normalized by probability examined */
+			record_option(g, who, CHOICE_ACTION, &opt, 1, NULL, 0,
+			              prob_used > 0 ? scores[i] / prob_used :
+			                              scores[i]);
+		}
+	}
 
 	/* Loop over possible actions */
 	for (i = 0; i < role.num_output; i++)
@@ -5685,6 +5782,12 @@ static int ai_choose_place(game *g, int who, int list[], int num, int phase,
 	}
 #endif
 
+	/* Record no-placement score for analyzer */
+	{
+		int opt = -1;
+		record_option(g, who, CHOICE_PLACE, &opt, 1, NULL, 0, b_s);
+	}
+
 	/* Loop over choices */
 	for (i = 0; i < num; i++)
 	{
@@ -5731,6 +5834,10 @@ static int ai_choose_place(game *g, int who, int list[], int num, int phase,
 			dump_game(g, &sim2);
 		}
 #endif
+
+		/* Record placement score for analyzer */
+		record_option(g, who, CHOICE_PLACE, &list[i], 1, NULL, 0,
+		              score);
 
 		/* Check for better */
 		if (score_better(score, b_s))
@@ -8592,6 +8699,450 @@ static void ai_shutdown(game *g, int who)
 
 	/* Mark weights as saved */
 	saved = 1;
+}
+
+/*
+ * Score one candidate answer to a pending choice, for the analyzer.
+ *
+ * The candidate is given in the same format the choice log uses:
+ * list/num and special/ns hold the answer items, and arg1-3 carry the
+ * same arguments that were passed to make_choice.  Mirrors the
+ * simulate/apply/complete/eval pattern of the ai_choose_* handlers so
+ * scores are comparable to the AI's own evaluations.
+ *
+ * Returns the evaluation score (approximately the win probability), or
+ * -2 if the choice type is not supported, or -3 if the candidate is
+ * illegal.
+ */
+double ai_eval_choice(game *g, int who, int type, int orig_list[], int num,
+                      int orig_special[], int ns, int arg1, int arg2,
+                      int arg3)
+{
+	game sim, sim2;
+	double score, b_s;
+	int list[MAX_DECK], special[MAX_DECK];
+	int i;
+
+	/* Copy candidate arrays: engine callbacks may scribble on them
+	 * (e.g. payment_callback replaces entries with fake cards in
+	 * simulated games) */
+	for (i = 0; i < num; i++) list[i] = orig_list[i];
+	for (i = 0; i < ns; i++) special[i] = orig_special[i];
+
+	/* Prepare the quick-discard list used by simulated turns
+	 * (normally done in ai_make_choice, which this bypasses) */
+	ai_prepare_discard(g, who);
+	g->p[who].low_hand = count_player_area(g, who, WHERE_HAND);
+
+	/* Determine type of choice */
+	switch (type)
+	{
+		/* Start world and initial discards */
+		case CHOICE_START:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Apply start world choice and discards */
+			start_callback(&sim, who, list, num, special, ns);
+
+			/* Handle special abilities of start world */
+			start_chosen(&sim);
+
+			/* Loop over players */
+			for (i = 0; i < g->num_players; i++)
+			{
+				/* Skip ourself */
+				if (i == who) continue;
+
+				/* Assume opponent will discard 2 */
+				sim.p[i].fake_discards = 2;
+			}
+
+			/* Clear best score */
+			b_s = -1;
+
+			/* Loop over possible action choices for first turn
+			 * (the same first-turn lookahead the AI uses when
+			 * choosing live; absolute values are inflated but
+			 * the ranking reflects first-turn plans) */
+			for (i = 0; i < role.num_output; i++)
+			{
+				/* Simulate game */
+				simulate_game(&sim2, &sim, who);
+
+				/* Check for advanced game */
+				if (!g->advanced)
+				{
+					/* Disallow prestige actions */
+					if (role_out[i] & ACT_PRESTIGE) continue;
+
+					/* Set actions */
+					sim2.p[who].action[0] = role_out[i];
+					sim2.p[who].action[1] = -1;
+				}
+				else
+				{
+					/* Disallow prestige actions */
+					if (adv_combo[i][0] & ACT_PRESTIGE)
+						continue;
+					if (adv_combo[i][1] & ACT_PRESTIGE)
+						continue;
+
+					/* Set actions */
+					sim2.p[who].action[0] = adv_combo[i][0];
+					sim2.p[who].action[1] = adv_combo[i][1];
+				}
+
+				/* Note actions */
+				note_actions(&sim2);
+
+				/* Start at beginning of first turn */
+				sim2.cur_action = ACT_ROUND_START;
+
+				/* Complete turn */
+				complete_turn(&sim2, COMPLETE_ROUND);
+
+				/* Evaluate results of first turn */
+				score = eval_game(&sim2, who);
+
+				/* Track best score */
+				if (score_better(score, b_s)) b_s = score;
+			}
+
+			/* Return score of best first turn */
+			return b_s;
+
+		/* Discard cards */
+		case CHOICE_DISCARD:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Apply discards */
+			discard_callback(&sim, who, list, num);
+
+			/* Check for start of game discards */
+			if (g->cur_action == ACT_ROUND_START && g->round == 0)
+			{
+				/* Clear best score */
+				b_s = -1;
+
+				/* Loop over action choices for first turn */
+				for (i = 0; i < role.num_output; i++)
+				{
+					/* Simulate game */
+					simulate_game(&sim2, &sim, who);
+
+					/* Check for advanced game */
+					if (!g->advanced)
+					{
+						/* Disallow prestige actions */
+						if (role_out[i] & ACT_PRESTIGE)
+							continue;
+
+						/* Set actions */
+						sim2.p[who].action[0] =
+							role_out[i];
+						sim2.p[who].action[1] = -1;
+					}
+					else
+					{
+						/* Disallow prestige actions */
+						if (adv_combo[i][0] &
+						    ACT_PRESTIGE) continue;
+						if (adv_combo[i][1] &
+						    ACT_PRESTIGE) continue;
+
+						/* Set actions */
+						sim2.p[who].action[0] =
+							adv_combo[i][0];
+						sim2.p[who].action[1] =
+							adv_combo[i][1];
+					}
+
+					/* Note actions */
+					note_actions(&sim2);
+
+					/* Start at beginning of turn */
+					sim2.cur_action = ACT_ROUND_START;
+
+					/* Complete turn */
+					complete_turn(&sim2, COMPLETE_ROUND);
+
+					/* Evaluate results */
+					score = eval_game(&sim2, who);
+
+					/* Track best score */
+					if (score_better(score, b_s))
+						b_s = score;
+				}
+
+				/* Return score of best first turn */
+				return b_s;
+			}
+
+			/* Check for explore phase */
+			if (sim.cur_action == ACT_EXPLORE_5_0)
+			{
+				/* Simulate most rest of turn */
+				complete_turn(&sim, COMPLETE_ROUND);
+			}
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Save a card under a world */
+		case CHOICE_SAVE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Save card */
+			move_card(&sim, list[0], who, WHERE_SAVED);
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Discard a card for prestige */
+		case CHOICE_DISCARD_PRESTIGE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Check for card chosen */
+			if (num > 0)
+			{
+				/* Discard card */
+				move_card(&sim, list[0], -1, WHERE_DISCARD);
+
+				/* Gain prestige */
+				gain_prestige(&sim, who, 1, NULL);
+			}
+
+			/* Finish turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Place a development/world */
+		case CHOICE_PLACE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Check for placement */
+			if (list[0] != -1)
+			{
+				/* Set placement option */
+				sim.p[who].placing = list[0];
+
+				/* Place card */
+				place_card(&sim, who, list[0]);
+
+				/* Check for develop phase */
+				if (arg1 == PHASE_DEVELOP)
+				{
+					/* Develop choice */
+					develop_action(&sim, who, list[0]);
+				}
+				else
+				{
+					/* Settle choice */
+					settle_finish(&sim, who, list[0], 0,
+					              arg2, 0);
+					settle_extra(&sim, who, list[0]);
+				}
+			}
+			else
+			{
+				/* Mark player as skipped */
+				if (arg1 == PHASE_DEVELOP)
+				{
+					/* Mark as skipped */
+					sim.p[who].skip_develop = 1;
+				}
+				else
+				{
+					/* Mark as skipped */
+					sim.p[who].skip_settle = 1;
+				}
+			}
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Pay for a development/world */
+		case CHOICE_PAYMENT:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Attempt payment */
+			if (!payment_callback(&sim, who, arg1, list, num,
+			                      special, ns, arg2, arg3))
+			{
+				/* Illegal payment */
+				return -3;
+			}
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Trade a good */
+		case CHOICE_TRADE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Trade chosen good */
+			trade_chosen(&sim, who, list[0], arg1);
+
+			/* Use remaining consume powers */
+			while (consume_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose consume power */
+		case CHOICE_CONSUME:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Check for power chosen */
+			if (num > 0)
+			{
+				/* Apply chosen power */
+				consume_chosen(&sim, who, list[0], special[0]);
+			}
+
+			/* Use remaining consume powers */
+			while (consume_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose cards from hand to consume */
+		case CHOICE_CONSUME_HAND:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Apply chosen cards */
+			consume_hand_chosen(&sim, who, arg1, arg2, list, num);
+
+			/* Use remaining consume powers */
+			while (consume_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose goods to consume */
+		case CHOICE_GOOD:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Apply chosen goods */
+			if (!good_chosen(&sim, who, special[0], special[1],
+			                 arg1, arg2, list, num))
+			{
+				/* Illegal choice */
+				return -3;
+			}
+
+			/* Use remaining consume powers */
+			while (consume_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose windfall world to produce on */
+		case CHOICE_WINDFALL:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Produce on world */
+			produce_world(&sim, who, list[0], arg1, arg2);
+
+			/* Use remaining produce powers */
+			while (produce_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose produce power */
+		case CHOICE_PRODUCE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Apply chosen power */
+			produce_chosen(&sim, who, list[0], special[0]);
+
+			/* Use remaining produce powers */
+			while (produce_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Choose card to discard to produce */
+		case CHOICE_DISCARD_PRODUCE:
+
+			/* Simulate game */
+			simulate_game(&sim, g, who);
+
+			/* Check for discard chosen */
+			if (num > 0)
+			{
+				/* Discard and produce */
+				discard_produce_chosen(&sim, who, special[0],
+				                       list[0], arg1, arg2);
+			}
+
+			/* Use remaining produce powers */
+			while (produce_action(&sim, who));
+
+			/* Simulate rest of turn */
+			complete_turn(&sim, COMPLETE_ROUND);
+
+			/* Evaluate result */
+			return eval_game(&sim, who);
+
+		/* Unsupported choice type */
+		default:
+			return -2;
+	}
 }
 
 /*

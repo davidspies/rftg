@@ -446,6 +446,82 @@ static int random_draw(game *g)
 }
 
 /*
+ * Hook called with every card drawn in a real (non-simulated) game.
+ * Used by the analyzer to trace draws.
+ */
+void (*draw_hook)(game *g, int who, int which) = NULL;
+
+/*
+ * Check whether taking the given card for an unscripted purpose (a
+ * good, or an unknown draw) would starve a scripted campaign draw:
+ * true if the remaining scripted demand for the card's design is at
+ * least the number of instances still circulating (deck + discard).
+ */
+static int card_reserved(game *g, int which)
+{
+	design *d_ptr = g->deck[which].d_ptr;
+	int i, j, demand = 0, supply = 0;
+
+	/* Check for no campaign */
+	if (!g->camp || g->simulation) return 0;
+
+	/* Count remaining scripted demand for this design */
+	for (i = 0; i < g->num_players; i++)
+	{
+		/* Loop over remaining campaign entries */
+		for (j = g->camp_status->pos[i];
+		     j < g->camp_status->size[i]; j++)
+		{
+			/* Check for lazy entry demanding this design */
+			if (g->camp_status->index[i][j] == -2 &&
+			    g->camp_status->order_d[i][j] == d_ptr) demand++;
+		}
+	}
+
+	/* Check for no demand */
+	if (!demand) return 0;
+
+	/* Count circulating supply of this design */
+	for (i = 0; i < g->deck_size; i++)
+	{
+		/* Check for instance in deck or discard */
+		if (g->deck[i].d_ptr == d_ptr &&
+		    (g->deck[i].where == WHERE_DECK ||
+		     g->deck[i].where == WHERE_DISCARD)) supply++;
+	}
+
+	/* Reserved if taking one would starve future scripted draws */
+	return demand >= supply;
+}
+
+/*
+ * Random draw avoiding cards reserved for scripted draws.
+ */
+static int random_draw_unreserved(game *g)
+{
+	int which, tries;
+
+	/* Try several times to find an unreserved card */
+	for (tries = 0; tries < 200; tries++)
+	{
+		/* Draw randomly */
+		which = random_draw(g);
+
+		/* Check for failure or unreserved card */
+		if (which == -1 || !card_reserved(g, which)) return which;
+
+		/* Put rejected card back in the draw deck (random_draw
+		 * marks it as in-transit) */
+		g->deck[which].where = WHERE_DECK;
+	}
+
+	/* Give up and accept reserved card */
+	fprintf(stderr, "campaign: random draw could not avoid reserved "
+	        "card %s\n", g->deck[which].d_ptr->name);
+	return which;
+}
+
+/*
  * Return a random card from the draw deck, unless the given player
  * has more campaign cards set to be given.
  * If deck is empty after this returns, it must be reshuffled.
@@ -454,21 +530,121 @@ static int campaign_draw(game *g, int who)
 {
 	int which;
 
-	/* Check for simulated game or no campaign */
-	if (g->simulation || !g->camp) return random_draw(g);
+	/* Check for simulated game */
+	if (g->simulation) return random_draw(g);
 
-	/* Check for player's campaign cards exhausted */
-	if (g->camp_status->pos[who] >= g->camp_status->size[who])
-		return random_draw(g);
+	/* Check for no campaign or exhausted campaign cards */
+	if (!g->camp ||
+	    g->camp_status->pos[who] >= g->camp_status->size[who])
+	{
+		/* Draw randomly, avoiding reserved cards */
+		which = random_draw_unreserved(g);
+	}
+	else
+	{
+		/* Get next campaign card */
+		which = g->camp_status->index[who][g->camp_status->pos[who]];
 
-	/* Get next campaign card */
-	which = g->camp_status->index[who][g->camp_status->pos[who]];
+		/* Check for lazily-resolved entry */
+		if (which == -2)
+		{
+			/* Get demanded design */
+			design *d_ptr = g->camp_status->
+			        order_d[who][g->camp_status->pos[who]];
+			int k;
 
-	/* Advance position */
-	g->camp_status->pos[who]++;
+			/* Look for an instance in the draw deck */
+			which = -1;
+			for (k = 0; k < g->deck_size; k++)
+			{
+				if (g->deck[k].where == WHERE_DECK &&
+				    g->deck[k].d_ptr == d_ptr)
+				{
+					which = k;
+					break;
+				}
+			}
 
-	/* Check for random card */
-	if (which < 0) which = random_draw(g);
+			/* Look in the discard pile (pending reshuffle) */
+			if (which == -1)
+			{
+				for (k = 0; k < g->deck_size; k++)
+				{
+					if (g->deck[k].where ==
+					        WHERE_DISCARD &&
+					    g->deck[k].d_ptr == d_ptr)
+					{
+						which = k;
+						break;
+					}
+				}
+			}
+
+			/* Look among face-down goods: their identity is
+			 * anonymous, so swap the demanded card with a
+			 * random replacement from the deck */
+			if (which == -1)
+			{
+				for (k = 0; k < g->deck_size; k++)
+				{
+					int sub;
+
+					if (g->deck[k].where != WHERE_GOOD ||
+					    g->deck[k].d_ptr != d_ptr)
+						continue;
+
+					/* Get replacement card */
+					sub = random_draw(g);
+					if (sub == -1) break;
+
+					/* Replacement becomes the good
+					 * (move_card maintains the zone
+					 * lists; the demanded card itself
+					 * is unlinked by our caller's
+					 * move_card) */
+					move_card(g, sub, g->deck[k].owner,
+					          WHERE_GOOD);
+					g->deck[sub].covering =
+						g->deck[k].covering;
+					g->deck[sub].misc &=
+						~MISC_KNOWN_MASK;
+
+					/* Take the demanded card */
+					g->deck[k].covering = -1;
+					which = k;
+					break;
+				}
+			}
+
+			/* Fall back to random draw */
+			if (which == -1)
+			{
+				fprintf(stderr, "campaign: no instance of %s "
+				        "available for player %d; drawing "
+				        "randomly. Instances:", d_ptr->name,
+				        who);
+				for (k = 0; k < g->deck_size; k++)
+				{
+					if (g->deck[k].d_ptr != d_ptr)
+						continue;
+					fprintf(stderr, " [where=%d owner=%d]",
+					        g->deck[k].where,
+					        g->deck[k].owner);
+				}
+				fprintf(stderr, "\n");
+				which = random_draw_unreserved(g);
+			}
+		}
+
+		/* Advance position */
+		g->camp_status->pos[who]++;
+
+		/* Check for random card */
+		if (which == -1) which = random_draw_unreserved(g);
+	}
+
+	/* Notify draw hook */
+	if (draw_hook && which != -1) draw_hook(g, who, which);
 
 	/* Return card */
 	return which;
@@ -1729,8 +1905,9 @@ void add_good(game *g, int which)
 	}
 	else
 	{
-		/* Get random card to use as good */
-		good = random_draw(g);
+		/* Get random card to use as good, avoiding cards
+		 * reserved for scripted draws */
+		good = random_draw_unreserved(g);
 	}
 
 	/* Check for failure */
@@ -6464,8 +6641,7 @@ static void flip_world(game *g, int who)
 	else
 	{
 		/* Draw top card */
-		/* TODO: Should use campaign_draw */
-		which = random_draw(g);
+		which = campaign_draw(g, who);
 	}
 
 	/* Check for failure */
@@ -10591,6 +10767,10 @@ static void produce_windfall(game *g, int who, int c_idx, int o_idx)
 	/* Check for aborted game */
 	if (g->game_over) return;
 
+	/* Check for declined production (scripted replays may leave the
+	 * windfall for a later power instead) */
+	if (!n) return;
+
 	/* Produce on chosen world */
 	produce_world(g, who, list[0], c_idx, o_idx);
 }
@@ -12811,9 +12991,13 @@ static void rotate_players(game *g)
 	/* Check for campaign */
 	if (g->camp)
 	{
+		design *camp_order_d[MAX_DECK];
+
 		/* Store copy of player 0's campaign settings */
 		memcpy(camp_order, g->camp_status->index[0], sizeof(int) *
 		                                             MAX_DECK);
+		memcpy(camp_order_d, g->camp_status->order_d[0],
+		       sizeof(design *) * MAX_DECK);
 		camp_size = g->camp_status->size[0];
 		camp_pos = g->camp_status->pos[0];
 
@@ -12824,6 +13008,9 @@ static void rotate_players(game *g)
 			memcpy(g->camp_status->index[i],
 			       g->camp_status->index[i + 1],
 			       sizeof(int) * MAX_DECK);
+			memcpy(g->camp_status->order_d[i],
+			       g->camp_status->order_d[i + 1],
+			       sizeof(design *) * MAX_DECK);
 			g->camp_status->size[i] = g->camp_status->size[i + 1];
 			g->camp_status->pos[i] = g->camp_status->pos[i + 1];
 		}
@@ -12831,6 +13018,8 @@ static void rotate_players(game *g)
 		/* Store temp copy in last spot */
 		memcpy(g->camp_status->index[i], camp_order, sizeof(int) *
 		                                             MAX_DECK);
+		memcpy(g->camp_status->order_d[i], camp_order_d,
+		       sizeof(design *) * MAX_DECK);
 		g->camp_status->size[i] = camp_size;
 		g->camp_status->pos[i] = camp_pos;
 	}
@@ -13192,11 +13381,44 @@ void begin_game(game *g)
 	}
 
 	/* Check expansion with start world choice */
-	if ((exp_info[g->expanded].has_start_world_choice || g->promo) && !g->camp)
+	if ((exp_info[g->expanded].has_start_world_choice || g->promo) &&
+	    (!g->camp || g->camp->start_choice[0][0]))
 	{
 		/* Loop over players */
 		for (i = 0; i < g->num_players; i++)
 		{
+			/* Check for scripted start world options */
+			if (g->camp && g->camp->start_choice[i][0])
+			{
+				int k;
+
+				/* Resolve both designs to deck instances */
+				for (j = 0; j < 2; j++)
+				{
+					start_picks[i][j] = -1;
+					for (k = 0; k < g->deck_size; k++)
+					{
+						if (g->deck[k].where ==
+						        WHERE_DECK &&
+						    g->deck[k].d_ptr ==
+						        g->camp->
+						            start_choice[i][j])
+						{
+							start_picks[i][j] = k;
+							break;
+						}
+					}
+					if (start_picks[i][j] == -1)
+					{
+						display_error("cannot resolve "
+						    "scripted start world\n");
+						abort();
+					}
+				}
+
+				goto picks_done;
+			}
+
 			/* Choose a Red start world */
 			n = game_rand(g) % num_start_red;
 
@@ -13214,6 +13436,8 @@ void begin_game(game *g)
 
 			/* Collapse list */
 			start_blue[n] = start_blue[--num_start_blue];
+
+picks_done:;
 
 			/* Remember original picks */
 			original_start_picks[i][0] = start_picks[i][0];
@@ -14336,6 +14560,13 @@ int get_score_bonus(game *g, int who, int which)
 		{
 			/* Add bonus for prestige */
 			amt += p_ptr->prestige;
+		}
+		else if (v_ptr->type == VP_GOODS)
+		{
+			/* Add bonus per good at game end */
+			x = p_ptr->head[WHERE_ACTIVE];
+			for ( ; x != -1; x = g->deck[x].next)
+				amt += g->deck[x].num_goods;
 		}
 		else if (v_ptr->type == VP_KIND_GOOD)
 		{

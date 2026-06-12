@@ -515,7 +515,8 @@
 #define VP_ANTI_XENO_FLAG       36
 #define VP_ANTI_XENO_WORLD      37
 #define VP_ANTI_XENO_DEVEL      38
-#define VP_XENO_MILITARY        39
+#define VP_GOODS                39
+#define VP_XENO_MILITARY        40
 
 
 /*
@@ -1078,6 +1079,11 @@ typedef struct campaign
 	/* Number of set-aside cards */
 	int size[MAX_PLAYER];
 
+	/* Scripted start world options (both dealt candidates); when
+	 * set, players are asked CHOICE_START as in non-campaign
+	 * expansion games instead of having the world forced */
+	design *start_choice[MAX_PLAYER][2];
+
 	/* Campaign flags */
 	int flags;
 
@@ -1096,6 +1102,10 @@ typedef struct campaign_status
 {
 	/* Card indices used */
 	int index[MAX_PLAYER][MAX_DECK];
+
+	/* Card designs (for lazily-resolved entries; rotates with
+	 * players, unlike the campaign definition itself) */
+	design *order_d[MAX_PLAYER][MAX_DECK];
 
 	/* Current position with campaign order */
 	int pos[MAX_PLAYER];
@@ -1122,6 +1132,13 @@ extern char *search_name[MAX_SEARCH];
 extern char *player_labels[MAX_PLAYER];
 extern char *location_names[MAX_WHERE];
 extern decisions ai_func;
+extern void (*ai_option_hook)(game *g, int who, int type, int list[],
+                              int num, int special[], int num_special,
+                              double score);
+extern double ai_eval_choice(game *g, int who, int type, int list[], int num,
+                             int special[], int ns, int arg1, int arg2,
+                             int arg3);
+extern void (*draw_hook)(game *g, int who, int which);
 extern decisions gui_func;
 
 /*
