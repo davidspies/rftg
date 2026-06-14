@@ -1135,6 +1135,8 @@ extern decisions ai_func;
 extern void (*ai_option_hook)(game *g, int who, int type, int list[],
                               int num, int special[], int num_special,
                               double score);
+extern void (*ai_predict_hook)(game *g, int who, int act0, int act1,
+                               double prob);
 extern double ai_eval_choice(game *g, int who, int type, int list[], int num,
                              int special[], int ns, int arg1, int arg2,
                              int arg3);

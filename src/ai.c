@@ -263,6 +263,15 @@ void (*ai_option_hook)(game *g, int who, int type, int list[], int num,
                        int special[], int num_special, double score) = NULL;
 
 /*
+ * Analyzer hook: report the predicted action distribution for an
+ * opponent.  Called once per legal action (combo) the opponent might
+ * choose, with the (renormalized) probability the role-predictor net
+ * assigns it.  act1 is -1 for non-advanced single actions.
+ */
+void (*ai_predict_hook)(game *g, int who, int act0, int act1,
+                        double prob) = NULL;
+
+/*
  * Record a candidate option's score if the analyzer hook is active.
  */
 static void record_option(game *g, int who, int type, int list[], int num,
@@ -3631,6 +3640,17 @@ static void ai_choose_action_advanced(game *g, int who, int action[2], int one)
 	/* Sort action order by probability */
 	qsort(action_order, n, sizeof(action_prob), cmp_action_prob);
 
+	/* Report predicted opponent distribution to the analyzer */
+	if (ai_predict_hook && !g->simulation && one != 1)
+	{
+		for (act = 0; act < n; act++)
+		{
+			int oc = action_order[act].choice;
+			ai_predict_hook(g, opp, adv_combo[oc][0],
+			                adv_combo[oc][1], action_order[act].prob);
+		}
+	}
+
 #ifdef DEBUG
 	printf("----- Player %d probability\n", opp);
 	for (act = 0; act < MAX_ACTION; act++)
@@ -4188,6 +4208,24 @@ static void ai_choose_action(game *g, int who, int action[2], int one)
 		/* Sort actions by probability */
 		qsort(action_order[current], role.num_output,
 		      sizeof(action_prob), cmp_action_prob);
+
+		/* Report predicted distribution for this opponent */
+		if (ai_predict_hook && !g->simulation)
+		{
+			double psum = 0;
+			for (i = 0; i < role.num_output; i++)
+				psum += choice_prob[current][i];
+			if (psum > 0)
+				for (i = 0; i < role.num_output; i++)
+				{
+					int oc = action_order[current][i].choice;
+					if (action_order[current][i].prob <= 0)
+						continue;
+					ai_predict_hook(g, current, role_out[oc],
+					    -1, action_order[current][i].prob /
+					    psum);
+				}
+		}
 	}
 
 	/* Reduce threshold to check similar events */
