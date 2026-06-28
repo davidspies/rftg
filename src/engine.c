@@ -6251,7 +6251,7 @@ static int upgrade_legal(game *g, int replacement, int old)
 }
 
 static void settle_bonus(game *g, int who, int world, int takeover,
-                         int simulated);
+                         int simulated, int action_bonus);
 
 /*
  * A player has chosen one world to replace another.
@@ -6328,8 +6328,10 @@ int upgrade_chosen(game *g, int who, int replacement, int old)
 	/* Place new card */
 	place_card(g, who, replacement);
 
-	/* Award bonuses for settling the replacement world */
-	settle_bonus(g, who, replacement, 0, 0);
+	/* Award placement-triggered powers for the replacement world.
+	 * Terraforming Engineers is not a Settle, so it does not award the
+	 * action-card Settle bonus. */
+	settle_bonus(g, who, replacement, 0, 0, 0);
 
 	/* Check for aborted game */
 	if (g->game_over) return 0;
@@ -6504,7 +6506,7 @@ static int upgrade_world(game *g, int who)
  * Award player bonus cards for successfully placing a world.
  */
 static void settle_bonus(game *g, int who, int world, int takeover,
-                         int simulated)
+                         int simulated, int action_bonus)
 {
 	player *p_ptr;
 	card *c_ptr;
@@ -6534,7 +6536,8 @@ static void settle_bonus(game *g, int who, int world, int takeover,
 	n = get_powers(g, who, PHASE_SETTLE, w_list);
 
 	/* Check for chosen settle action */
-	if (player_chose(g, who, g->cur_action) && !p_ptr->phase_bonus_used)
+	if (action_bonus && player_chose(g, who, g->cur_action) &&
+	    !p_ptr->phase_bonus_used)
 	{
 		/* Draw card */
 		draw_card(g, who, "his Settle bonus");
@@ -6680,7 +6683,7 @@ static void flip_world(game *g, int who)
 		place_card(g, who, which);
 
 		/* Give bonuses */
-		settle_bonus(g, who, which, 0, 0);
+		settle_bonus(g, who, which, 0, 0, 1);
 
 		/* Check for aborted game */
 		if (g->game_over) return;
@@ -6804,7 +6807,7 @@ void settle_finish(game *g, int who, int world, int mil_only, int special,
 	if (world != -1 && !takeover)
 	{
 		/* Award bonuses for settling */
-		settle_bonus(g, who, world, 0, 0);
+		settle_bonus(g, who, world, 0, 0, 1);
 
 		/* Check for aborted game */
 		if (g->game_over) return;
@@ -8068,7 +8071,7 @@ int resolve_takeover(game *g, int who, int world, int special,
 		if (prestige) gain_prestige(g, who, prestige, prestige_reason);
 
 		/* Award settle bonus */
-		settle_bonus(g, who, world, 1, simulated);
+		settle_bonus(g, who, world, 1, simulated, 1);
 
 		/* Check for aborted game */
 		if (g->game_over) return 0;
@@ -8169,7 +8172,7 @@ int resolve_takeover(game *g, int who, int world, int special,
 	if (prestige) gain_prestige(g, who, prestige, prestige_reason);
 
 	/* Award settle bonus */
-	settle_bonus(g, who, world, 1, simulated);
+	settle_bonus(g, who, world, 1, simulated, 1);
 
 	/* Check for aborted game */
 	if (g->game_over) return 0;
