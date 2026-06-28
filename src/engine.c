@@ -6250,6 +6250,9 @@ static int upgrade_legal(game *g, int replacement, int old)
 	return 1;
 }
 
+static void settle_bonus(game *g, int who, int world, int takeover,
+                         int simulated);
+
 /*
  * A player has chosen one world to replace another.
  *
@@ -6324,6 +6327,12 @@ int upgrade_chosen(game *g, int who, int replacement, int old)
 
 	/* Place new card */
 	place_card(g, who, replacement);
+
+	/* Award bonuses for settling the replacement world */
+	settle_bonus(g, who, replacement, 0, 0);
+
+	/* Check for aborted game */
+	if (g->game_over) return 0;
 
 	/* Award prestige for upgrade */
 	gain_prestige(g, who, 1, "Terraforming Engineers");
