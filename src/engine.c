@@ -5568,6 +5568,7 @@ static void pay_settle(game *g, int who, int world, int mil_only, int mil_bonus)
 	power *o_ptr;
 	int list[MAX_DECK], special[MAX_DECK];
 	int conquer, good, military, cost, takeover;
+	int payment_ok;
 	uint64_t flags;
 	int n = 0, num_special = 0;
 	int i;
@@ -5843,8 +5844,16 @@ static void pay_settle(game *g, int who, int world, int mil_only, int mil_bonus)
 	if (g->game_over) return;
 
 	/* Apply payment */
-	settle_callback(g, who, world, list, n, special, num_special, mil_only,
-	                mil_bonus);
+	payment_ok = settle_callback(g, who, world, list, n, special, num_special,
+	                             mil_only, mil_bonus);
+	if (!payment_ok)
+	{
+		/* Error */
+		sprintf(msg, "Settle payment failed for player %d placing %s!\n",
+		        who, c_ptr->d_ptr->name);
+		display_error(msg);
+		abort();
+	}
 }
 
 /*
