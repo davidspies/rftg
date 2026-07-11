@@ -22,6 +22,7 @@
  */
 
 #include "rftg.h"
+#include <assert.h>
 
 /*
  * Information about each expansion.
@@ -10144,6 +10145,30 @@ void consume_chosen(game *g, int who, int c_idx, int o_idx)
 }
 
 /*
+ * Resolve mandatory Consume draws as a single opening sweep.  Callers enter
+ * consume_action only after the Consume-Trade role's trade, so these draws
+ * happen after the trade target is chosen and before any consume-power ask.
+ */
+static int consume_automatic_draws(game *g, int who)
+{
+	power_where w_list[100], *w_ptr;
+	int i, n, used = 0;
+
+	n = get_powers(g, who, PHASE_CONSUME, w_list);
+	for (i = 0; i < n; i++)
+	{
+		w_ptr = &w_list[i];
+		if (!(w_ptr->o_ptr->code & P4_DRAW)) continue;
+
+		consume_chosen(g, who, w_ptr->c_idx, w_ptr->o_idx);
+		used = 1;
+		if (g->game_over) return used;
+	}
+
+	return used;
+}
+
+/*
  * Ask the player to use a consume power.
  *
  * We return 0 if there are no powers to be used, and 1 otherwise.
@@ -10162,6 +10187,9 @@ int consume_action(game *g, int who)
 
 	/* Get player pointer */
 	p_ptr = &g->p[who];
+
+	/* Mandatory draws are bookkeeping, never policy choices. */
+	if (consume_automatic_draws(g, who)) return !g->game_over;
 
 	/* Clear good type counts */
 	for (i = 0; i < MAX_GOOD; i++) types[i] = 0;
@@ -10202,6 +10230,9 @@ int consume_action(game *g, int who)
 
 		/* Get card pointer */
 		c_ptr = &g->deck[w_ptr->c_idx];
+
+		/* The opening sweep must have exhausted every fixed draw. */
+		assert(!(o_ptr->code & P4_DRAW));
 
 		/* Assume only one good needed */
 		need = 1;
@@ -10352,7 +10383,7 @@ int consume_action(game *g, int who)
 		}
 
 		/* Check for other powers */
-		if (o_ptr->code & (P4_DRAW | P4_DRAW_LUCKY | P4_VP |
+		if (o_ptr->code & (P4_DRAW_LUCKY | P4_VP |
 		                   P4_ANTE_CARD))
 		{
 			/* Add power to list */
@@ -11335,6 +11366,84 @@ void produce_chosen(game *g, int who, int c_idx, int o_idx)
 }
 
 /*
+ * Return whether a Produce power is resolved only after every player has
+ * finished producing.  BGA resolves this entire family at the end of the
+ * phase; keeping the classification in one place prevents produce_action
+ * from accidentally interleaving one of these rewards with goods.
+ */
+static int produce_power_is_personal_phase_end(power *o_ptr)
+{
+	return o_ptr->code & (P5_DRAW_WORLD_GENE |
+	                      P5_DRAW_EACH_NOVELTY |
+	                      P5_DRAW_EACH_RARE |
+	                      P5_DRAW_EACH_GENE |
+	                      P5_DRAW_EACH_ALIEN |
+	                      P5_DRAW_DIFFERENT |
+	                      P5_DRAW_EVERY_TWO);
+}
+
+static int produce_power_is_competitive_phase_end(power *o_ptr)
+{
+	return o_ptr->code & (P5_DRAW_MOST_NOVELTY |
+	                      P5_DRAW_MOST_RARE |
+	                      P5_DRAW_MOST_GENE |
+	                      P5_DRAW_MOST_PRODUCED);
+}
+
+static int produce_power_is_phase_end(power *o_ptr)
+{
+	return produce_power_is_personal_phase_end(o_ptr) ||
+	       produce_power_is_competitive_phase_end(o_ptr);
+}
+
+static int produce_power_is_opening_count_reward(power *o_ptr)
+{
+	return o_ptr->code & (P5_DRAW_MILITARY |
+	                      P5_DRAW_REBEL |
+	                      P5_DRAW_REBEL_MILITARY |
+	                      P5_DRAW_IMPERIUM |
+	                      P5_DRAW_CHROMO |
+	                      P5_DRAW_5_DEV |
+	                      P5_PRESTIGE_MOST_CHROMO |
+	                      P5_TAKE_SAVED |
+	                      P5_DRAW_WORLD_RARE |
+	                      P5_DRAW_XENO_MILITARY |
+	                      P5_DRAW_TWO_MILITARY);
+}
+
+/*
+ * Resolve the deterministic opening sweep before any windfall power.  This
+ * is one sweep over a snapshot of the player's powers, so production worlds
+ * and unconditional/count-based rewards retain tableau/power order while no
+ * windfall can be interleaved between them.
+ */
+static int produce_automatic_opening(game *g, int who)
+{
+	power_where w_list[100], *w_ptr;
+	card *c_ptr;
+	power *o_ptr;
+	int i, n, used = 0;
+
+	n = get_powers(g, who, PHASE_PRODUCE, w_list);
+	for (i = 0; i < n; i++)
+	{
+		w_ptr = &w_list[i];
+		c_ptr = &g->deck[w_ptr->c_idx];
+		o_ptr = w_ptr->o_ptr;
+
+		if (!(o_ptr->code & P5_DRAW) &&
+		    !(o_ptr->code == P5_PRODUCE && !c_ptr->num_goods) &&
+		    !produce_power_is_opening_count_reward(o_ptr)) continue;
+
+		produce_chosen(g, who, w_ptr->c_idx, w_ptr->o_idx);
+		used = 1;
+		if (g->game_over) return used;
+	}
+
+	return used;
+}
+
+/*
  * Loop over produce powers and use them.
  *
  * It is occasionally necessary to ask the player which order to use some
@@ -11353,6 +11462,10 @@ int produce_action(game *g, int who)
 
 	/* Get player pointer */
 	p_ptr = &g->p[who];
+
+	/* Finish the whole deterministic opening before considering any
+	 * windfall or role-bonus action. */
+	if (produce_automatic_opening(g, who)) return !g->game_over;
 
 	/* Clear windfall counts */
 	for (i = 0; i < MAX_GOOD; i++) windfall[i] = 0;
@@ -11404,58 +11517,21 @@ int produce_action(game *g, int who)
 		/* Get card pointer */
 		c_ptr = &g->deck[w_ptr->c_idx];
 
-		/* Check for draw cards */
-		if (o_ptr->code & P5_DRAW)
-		{
-			/* Use immediately */
-			produce_chosen(g, who, w_ptr->c_idx, w_ptr->o_idx);
+		/* BGA resolves completed-phase rewards only after every player
+		 * has finished producing. */
+		if (produce_power_is_phase_end(o_ptr)) continue;
 
-			/* Check for aborted game */
-			if (g->game_over) return 0;
-
-			/* Next power */
-			continue;
-		}
+		/* Opening rewards must have been exhausted by the sweep above. */
+		assert(!(o_ptr->code & P5_DRAW));
 
 		/* Check for produce */
 		if (o_ptr->code == P5_PRODUCE)
 		{
-			/* Skip worlds with good already */
-			if (c_ptr->num_goods) continue;
-
-			/* Use power immediately */
-			produce_chosen(g, who, w_ptr->c_idx, w_ptr->o_idx);
-
-			/* Check for aborted game */
-			if (g->game_over) return 0;
-
-			/* Next power */
+			assert(c_ptr->num_goods);
 			continue;
 		}
 
-		/* Check for other draw powers */
-		if (o_ptr->code & (P5_DRAW_WORLD_GENE |
-		                   P5_DRAW_MILITARY |
-		                   P5_DRAW_REBEL |
-		                   P5_DRAW_REBEL_MILITARY |
-		                   P5_DRAW_IMPERIUM |
-		                   P5_DRAW_CHROMO |
-		                   P5_DRAW_5_DEV |
-		                   P5_PRESTIGE_MOST_CHROMO |
-		                   P5_TAKE_SAVED |
-		                   P5_DRAW_WORLD_RARE |
-		                   P5_DRAW_XENO_MILITARY |
-		                   P5_DRAW_TWO_MILITARY))
-		{
-			/* Use power immediately */
-			produce_chosen(g, who, w_ptr->c_idx, w_ptr->o_idx);
-
-			/* Check for aborted game */
-			if (g->game_over) return 0;
-
-			/* Next power */
-			continue;
-		}
+		assert(!produce_power_is_opening_count_reward(o_ptr));
 
 		/* Check for useless windfall production */
 		if ((o_ptr->code & P5_WINDFALL_NOVELTY) &&
@@ -11499,13 +11575,7 @@ int produce_action(game *g, int who)
 		                   P5_WINDFALL_NOVELTY |
 		                   P5_WINDFALL_RARE |
 		                   P5_WINDFALL_GENE |
-		                   P5_WINDFALL_ALIEN |
-		                   P5_DRAW_EACH_NOVELTY |
-		                   P5_DRAW_EACH_RARE |
-		                   P5_DRAW_EACH_GENE |
-		                   P5_DRAW_EACH_ALIEN |
-		                   P5_DRAW_DIFFERENT |
-		                   P5_DRAW_EVERY_TWO))
+		                   P5_WINDFALL_ALIEN))
 		{
 			/* Add power to list */
 			cidx[num] = w_list[i].c_idx;
@@ -11717,7 +11787,7 @@ void phase_produce_end(game *g)
 		all[i] = 0;
 
 		/* Loop over good types */
-		for (j = GOOD_NOVELTY; j <= GOOD_ALIEN; j++)
+		for (j = 0; j < MAX_GOOD; j++)
 		{
 			/* No goods of this type produced */
 			produced[i][j] = 0;
@@ -11735,6 +11805,10 @@ void phase_produce_end(game *g)
 			/* Skip cards that did not produce */
 			if (!GET_PRODUCED(c_ptr)) continue;
 
+			/* A produced world must have a concrete good kind. */
+			assert(GET_PRODUCED(c_ptr) >= GOOD_NOVELTY);
+			assert(GET_PRODUCED(c_ptr) < MAX_GOOD);
+
 			/* Count goods produced */
 			all[i]++;
 
@@ -11743,119 +11817,99 @@ void phase_produce_end(game *g)
 		}
 	}
 
-	/* Loop over players to check for most rare produced */
+	/* Resolve every completed-phase reward in player and power order. */
 	for (i = 0; i < g->num_players; i++)
 	{
-		/* Get player pointer */
 		p_ptr = &g->p[i];
-
-		/* Loop over good types */
-		for (j = GOOD_NOVELTY; j <= GOOD_ALIEN; j++)
-		{
-			/* Assume player created most of this type */
-			most = 1;
-
-			/* Loop over other players */
-			for (k = 0; k < g->num_players; k++)
-			{
-				/* Skip same player */
-				if (i == k) continue;
-
-				/* Check for no more produced */
-				if (produced[k][j] >= produced[i][j]) most = 0;
-			}
-
-			/* Skip player who did not make most rare */
-			if (!most) continue;
-
-			/* Get list of produce powers */
-			n = get_powers(g, i, PHASE_PRODUCE, w_list);
-
-			/* Loop over powers */
-			for (k = 0; k < n; k++)
-			{
-				/* Get power pointer */
-				o_ptr = w_list[k].o_ptr;
-
-				/* Check for produced most novelty */
-				if (j == GOOD_NOVELTY &&
-				    o_ptr->code & P5_DRAW_MOST_NOVELTY)
-				{
-					/* Draw cards */
-					draw_cards(g, i, o_ptr->value,
-					           g->deck[w_list[k].c_idx].d_ptr->name);
-
-					/* Count reward */
-					p_ptr->phase_cards += o_ptr->value;
-				}
-
-				/* Check for produced most rare */
-				if (j == GOOD_RARE &&
-				    o_ptr->code & P5_DRAW_MOST_RARE)
-				{
-					/* Draw cards */
-					draw_cards(g, i, o_ptr->value,
-					           g->deck[w_list[k].c_idx].d_ptr->name);
-
-					/* Count reward */
-					p_ptr->phase_cards += o_ptr->value;
-				}
-
-				/* Check for produced most genes */
-				if (j == GOOD_GENE &&
-				    o_ptr->code & P5_DRAW_MOST_GENE)
-				{
-					/* Draw cards */
-					draw_cards(g, i, o_ptr->value,
-					           g->deck[w_list[k].c_idx].d_ptr->name);
-
-					/* Count reward */
-					p_ptr->phase_cards += o_ptr->value;
-				}
-			}
-		}
-	}
-
-	/* Loop over players to check for most goods produced */
-	for (i = 0; i < g->num_players; i++)
-	{
-		/* Get player pointer */
-		p_ptr = &g->p[i];
-
-		/* Assume player created most goods */
-		most = 1;
-
-		/* Loop over other players */
-		for (j = 0; j < g->num_players; j++)
-		{
-			/* Skip same player */
-			if (i == j) continue;
-
-			/* Check for no more goods produced */
-			if (all[j] >= all[i]) most = 0;
-		}
-
-		/* Skip player who did not make most goods */
-		if (!most) continue;
-
-		/* Get list of produce powers */
 		n = get_powers(g, i, PHASE_PRODUCE, w_list);
 
-		/* Loop over powers */
 		for (j = 0; j < n; j++)
 		{
-			/* Get power pointer */
 			o_ptr = w_list[j].o_ptr;
+			if (!produce_power_is_phase_end(o_ptr)) continue;
 
-			/* Check for produced most goods */
+			/* Personal rewards share produce_chosen's existing, tested
+			 * accounting and mark their power used there. */
+			if (produce_power_is_personal_phase_end(o_ptr))
+			{
+				produce_chosen(g, i, w_list[j].c_idx,
+				               w_list[j].o_idx);
+				assert(!g->game_over);
+				continue;
+			}
+
+			assert(produce_power_is_competitive_phase_end(o_ptr));
+
+			/* Mark the competitive power used even when it awards
+			 * nothing, matching the other completed-phase powers. */
+			c_ptr = &g->deck[w_list[j].c_idx];
+			c_ptr->misc |= 1 << (MISC_USED_SHIFT + w_list[j].o_idx);
+
+			if (o_ptr->code & P5_DRAW_MOST_NOVELTY)
+			{
+				most = 1;
+				for (k = 0; k < g->num_players; k++)
+				{
+					if (i == k) continue;
+					if (produced[k][GOOD_NOVELTY] >=
+					    produced[i][GOOD_NOVELTY]) most = 0;
+				}
+				if (most)
+				{
+					draw_cards(g, i, o_ptr->value,
+					           c_ptr->d_ptr->name);
+					p_ptr->phase_cards += o_ptr->value;
+				}
+			}
+
+			if (o_ptr->code & P5_DRAW_MOST_RARE)
+			{
+				most = 1;
+				for (k = 0; k < g->num_players; k++)
+				{
+					if (i == k) continue;
+					if (produced[k][GOOD_RARE] >=
+					    produced[i][GOOD_RARE]) most = 0;
+				}
+				if (most)
+				{
+					draw_cards(g, i, o_ptr->value,
+					           c_ptr->d_ptr->name);
+					p_ptr->phase_cards += o_ptr->value;
+				}
+			}
+
+			if (o_ptr->code & P5_DRAW_MOST_GENE)
+			{
+				most = 1;
+				for (k = 0; k < g->num_players; k++)
+				{
+					if (i == k) continue;
+					if (produced[k][GOOD_GENE] >=
+					    produced[i][GOOD_GENE]) most = 0;
+				}
+				if (most)
+				{
+					draw_cards(g, i, o_ptr->value,
+					           c_ptr->d_ptr->name);
+					p_ptr->phase_cards += o_ptr->value;
+				}
+			}
+
 			if (o_ptr->code & P5_DRAW_MOST_PRODUCED)
 			{
-				/* Draw cards */
-				draw_cards(g, i, o_ptr->value,
-				           g->deck[w_list[j].c_idx].d_ptr->name);
-
-				/* Count reward */
-				p_ptr->phase_cards += o_ptr->value;
+				most = 1;
+				for (k = 0; k < g->num_players; k++)
+				{
+					if (i == k) continue;
+					if (all[k] >= all[i]) most = 0;
+				}
+				if (most)
+				{
+					draw_cards(g, i, o_ptr->value,
+					           c_ptr->d_ptr->name);
+					p_ptr->phase_cards += o_ptr->value;
+				}
 			}
 		}
 	}
