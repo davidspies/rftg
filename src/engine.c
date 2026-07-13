@@ -5869,7 +5869,7 @@ int takeover_callback(game *g, int special, int world)
 	card *c_ptr;
 	power *o_ptr;
 	char msg[1024];
-	int i, owner, rebel;
+	int i, owner, rebel, source_owner;
 
 	/* Get world being targetted */
 	c_ptr = &g->deck[world];
@@ -5882,6 +5882,7 @@ int takeover_callback(game *g, int special, int world)
 
 	/* Get special card */
 	c_ptr = &g->deck[special];
+	source_owner = c_ptr->owner;
 
 	/* Loop over powers */
 	for (i = 0; i < c_ptr->d_ptr->num_power; i++)
@@ -5907,6 +5908,10 @@ int takeover_callback(game *g, int special, int world)
 		{
 			/* Discard card */
 			move_card(g, special, -1, WHERE_DISCARD);
+
+			/* A discarded takeover development can cost its owner the
+			 * most developments goal, just like other tableau discards. */
+			check_goal_loss(g, source_owner, GOAL_MOST_DEVEL);
 		}
 		else
 		{
@@ -7850,8 +7855,12 @@ static void defend_takeover(game *g, int who, int world, int attacker,
 	/* Add maximum hand military */
 	max += hand_military;
 
-	/* Check for no way to successfully defend */
-	if (max <= deficit) return;
+	/* Live players are not asked to spend resources on a defense that
+	 * cannot defeat the takeover.  A replay controller may still need
+	 * the ask to reproduce a legal but futile spend recorded elsewhere. */
+	if (max <= deficit &&
+	    (!p_ptr->control->allow_futile_takeover_defense || max == 0))
+		return;
 
 	/* Get cards in hand */
 	n = get_player_area(g, who, list, WHERE_HAND);
@@ -12909,12 +12918,15 @@ void check_goals(game *g)
 				    g->cur_action != ACT_SETTLE2) continue;
 				break;
 
-			/* Develop phase only */
+			/* Develop normally changes this goal, but Settle may discard
+			 * an active takeover development and change the leader. */
 			case GOAL_MOST_DEVEL:
 
-				/* Only check after develop */
+				/* Only check after develop or settle */
 				if (g->cur_action != ACT_DEVELOP &&
-				    g->cur_action != ACT_DEVELOP2) continue;
+				    g->cur_action != ACT_DEVELOP2 &&
+				    g->cur_action != ACT_SETTLE &&
+				    g->cur_action != ACT_SETTLE2) continue;
 				break;
 
 			/* Develop/Settle phases only */

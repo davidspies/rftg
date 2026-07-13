@@ -813,6 +813,10 @@ typedef struct decisions
 	/* Private message */
 	void (*private_message)(struct game *g, int who, char *msg, char *tag);
 
+	/* Replay controllers may need to reproduce a legal takeover-defense
+	 * spend even when it cannot raise defense above the attack. */
+	int allow_futile_takeover_defense;
+
 } decisions;
 
 /*
