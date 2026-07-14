@@ -365,6 +365,8 @@ int prestige_on_tile(game *g, int who)
 /*
  * Refresh the draw deck.
  */
+void (*refresh_hook)(game *g) = NULL;
+
 static void refresh_draw(game *g)
 {
 	card *c_ptr;
@@ -392,6 +394,9 @@ static void refresh_draw(game *g)
 		/* Card's location is no longer known to anyone */
 		c_ptr->misc &= ~MISC_KNOWN_MASK;
 	}
+
+	/* Notify observers after every discarded card has moved. */
+	if (refresh_hook && !g->simulation) refresh_hook(g);
 }
 
 /*
@@ -451,6 +456,9 @@ static int random_draw(game *g)
  * Used by the analyzer to trace draws.
  */
 void (*draw_hook)(game *g, int who, int which) = NULL;
+
+/* Hook called when a physical card becomes a good in a real game. */
+void (*good_hook)(game *g, int world, int good) = NULL;
 
 /*
  * Check whether taking the given card for an unscripted purpose (a
@@ -609,6 +617,9 @@ static int campaign_draw(game *g, int who)
 						g->deck[k].covering;
 					g->deck[sub].misc &=
 						~MISC_KNOWN_MASK;
+
+					if (good_hook && !g->simulation)
+						good_hook(g, g->deck[sub].covering, sub);
 
 					/* Take the demanded card */
 					g->deck[k].covering = -1;
@@ -1925,6 +1936,8 @@ void add_good(game *g, int which)
 
 	/* Mark covered card */
 	c_ptr->num_goods++;
+
+	if (good_hook && !g->simulation) good_hook(g, which, good);
 }
 
 /*

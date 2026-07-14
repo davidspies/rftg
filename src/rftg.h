@@ -1145,6 +1145,8 @@ extern double ai_eval_choice(game *g, int who, int type, int list[], int num,
                              int special[], int ns, int arg1, int arg2,
                              int arg3);
 extern void (*draw_hook)(game *g, int who, int which);
+extern void (*good_hook)(game *g, int world, int good);
+extern void (*refresh_hook)(game *g);
 extern decisions gui_func;
 
 /*
