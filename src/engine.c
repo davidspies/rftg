@@ -10206,6 +10206,13 @@ int consume_action(game *g, int who)
 	int i, x, need, n, num = 0, required_any, good_type;
 	uint64_t cons;
 	int optional = 1;
+	/* BGA-reported optionality: like `optional`, but Gambling World's
+	 * DRAW_LUCKY guess does not force it mandatory (see the DRAW_LUCKY
+	 * branch below and NOTES.md R4). This is the value REPORTED to the
+	 * player as the CHOICE_CONSUME optional arg and the value that
+	 * ACCEPTS an external decline; `optional` alone keeps stock ask
+	 * omission and stock AI play. */
+	int bga_optional = 1;
 
 	/* Get player pointer */
 	p_ptr = &g->p[who];
@@ -10304,8 +10311,9 @@ int consume_action(game *g, int who)
 					oidx[num] = w_ptr->o_idx;
 					num++;
 
-					/* Not optional */
+					/* Not optional (mandatory under either ruleset) */
 					optional = 0;
+					bga_optional = 0;
 				}
 
 				/* Process next power, either because this one was added, or
@@ -10332,8 +10340,9 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Not optional (mandatory under either ruleset) */
 			optional = 0;
+			bga_optional = 0;
 		}
 
 		/* Check for consume 3 types */
@@ -10344,8 +10353,9 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Not optional (mandatory under either ruleset) */
 			optional = 0;
+			bga_optional = 0;
 		}
 
 		/* Check for consume different types */
@@ -10356,8 +10366,9 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Not optional (mandatory under either ruleset) */
 			optional = 0;
+			bga_optional = 0;
 		}
 
 		/* Check for consume all */
@@ -10368,8 +10379,9 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Not optional (mandatory under either ruleset) */
 			optional = 0;
+			bga_optional = 0;
 		}
 
 		/* Check for consume prestige */
@@ -10400,8 +10412,9 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Not optional (mandatory under either ruleset) */
 			optional = 0;
+			bga_optional = 0;
 		}
 
 		/* Check for other powers */
@@ -10413,8 +10426,25 @@ int consume_action(game *g, int who)
 			oidx[num] = w_ptr->o_idx;
 			num++;
 
-			/* Not optional */
+			/* Stock keeps DRAW_LUCKY mandatory: `optional` stays 0 so
+			 * ask omission and the AI's own play are byte-identical to
+			 * stock everywhere (a lone lucky emits no ask; C has already
+			 * entered the effect and cannot be skipped in a live match).
+			 *
+			 * Gambling World's guess is skippable on BGA (validated on
+			 * BGA by dspyz, 2026-07-14); the fork REPORTS that truth via
+			 * bga_optional and ACCEPTS an external decline, so DRAW_LUCKY
+			 * alone no longer forces bga_optional. VP powers consume goods
+			 * and stay mandatory under the general consume-goods rule;
+			 * ANTE_CARD is the vestigial older-edition Gambling World
+			 * power (replaced by the lucky logic) and cannot occur in
+			 * current sets. */
 			optional = 0;
+			if (o_ptr->code & (P4_VP | P4_ANTE_CARD))
+			{
+				/* Still mandatory on BGA (consumes goods / vestigial) */
+				bga_optional = 0;
+			}
 		}
 	}
 
@@ -10433,19 +10463,26 @@ int consume_action(game *g, int who)
 	/* Check for no usable powers */
 	if (!num) return 0;
 
-	/* Check for more than one power to use */
+	/* Check for more than one power to use. Ask omission uses stock
+	 * `optional` so a lone mandatory power (including a singleton
+	 * DRAW_LUCKY) emits no ask, byte-identical to stock. */
 	if (num > 1 || (num == 1 && optional))
 	{
-		/* Ask player which power to use */
+		/* Ask player which power to use. Report BGA-true optionality
+		 * (bga_optional): the external player may decline a skippable
+		 * lucky, while the internal AI still plays it (ai_choose_consume
+		 * selects any DRAW_LUCKY/VP power before consulting the flag). */
 		ask_player(g, who, CHOICE_CONSUME, cidx, &num, oidx, &num,
-		           optional, 0, 0);
+		           bga_optional, 0, 0);
 	}
 
 	/* Check for aborted game */
 	if (g->game_over) return 0;
 
-	/* Check for no power selected */
-	if (optional && num == 0) return 0;
+	/* Check for no power selected. Accept an empty answer whenever BGA
+	 * says the consume was skippable (bga_optional); this is the same
+	 * decline path stock already uses for its own optional consume asks. */
+	if (bga_optional && num == 0) return 0;
 
 	/* Use chosen power */
 	consume_chosen(g, who, cidx[0], oidx[0]);
