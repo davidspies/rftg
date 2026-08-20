@@ -440,6 +440,13 @@ void (*phase_hook)(game *g) = NULL;
  */
 void (*consume_hook)(game *g, int who, int c_idx, int o_idx) = NULL;
 
+/*
+ * Hook called (real games only) when a good is spent from a world by a
+ * consume or trade power, asked or automatic.  Goods that leave with an
+ * upgraded or destroyed world are not spends and do not fire it.
+ */
+void (*spend_hook)(game *g, int who, int world) = NULL;
+
 static void refresh_draw(game *g)
 {
 	card *c_ptr;
@@ -8739,6 +8746,7 @@ void trade_chosen(game *g, int who, int which, int no_bonus)
 	 * physical discard pile until the next reshuffle */
 	c_ptr->num_goods--;
 	g->goods_departed++;
+	if (spend_hook && !g->simulation) spend_hook(g, who, which);
 
 	/* Get good type */
 	type = c_ptr->d_ptr->good_type;
@@ -9195,6 +9203,8 @@ int good_chosen(game *g, int who, int c_idx, int o_idx,
 		 * the physical discard pile until the next reshuffle */
 		c_ptr->num_goods--;
 		g->goods_departed++;
+		if (spend_hook && !g->simulation)
+			spend_hook(g, who, g_list[i]);
 
 		/* Message */
 		if (!g->simulation)

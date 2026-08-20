@@ -1169,6 +1169,7 @@ extern void (*good_hook)(game *g, int world);
 extern void (*refresh_hook)(game *g);
 extern void (*phase_hook)(game *g);
 extern void (*consume_hook)(game *g, int who, int c_idx, int o_idx);
+extern void (*spend_hook)(game *g, int who, int world);
 extern decisions gui_func;
 
 /*
