@@ -612,15 +612,16 @@ static int campaign_draw(game *g, int who)
 			}
 
 			/* Look in the discard pile: cross-player interleave
-			 * flexibility (dspyz-ruled 2026-08-31).  The rules
-			 * leave simultaneous-phase resolution order between
-			 * players unpinned and BGA's actual interleaving is
-			 * arbitrary (it follows neither seat order nor
-			 * start-world numbers, and single produce bursts
-			 * interleave players).  Both engines reshuffle
-			 * eagerly at the formula crossing, but our canonical
-			 * per-player order can reach that crossing with
-			 * different pile contents than the source game,
+			 * flexibility (dspyz-ruled 2026-08-31, permanent).
+			 * BGA phases are real-time — a player draws as soon
+			 * as they consume a good — so the deck can reshuffle
+			 * mid-phase with players' resolutions only partially
+			 * done, and the cross-player order around a crossing
+			 * is human click timing: arbitrary, no deterministic
+			 * rule to be faithful to.  Both engines reshuffle
+			 * eagerly at the formula crossing, but this engine's
+			 * canonical per-player order can reach that crossing
+			 * with different pile contents than the source game,
 			 * leaving an identified card on the wrong side of
 			 * the shuffle.  Resolve the pinned draw from the
 			 * discard exactly as the source game drew it
