@@ -217,12 +217,15 @@ static int count_draw(game *g)
 }
 
 /*
- * Return whether the draw deck is empty.
+ * Return the number of goods currently in play.
+ *
+ * Goods are counters on worlds (card.num_goods), never physical cards.
  */
-static int draw_empty(game *g)
+static int count_goods_in_play(game *g)
 {
 	card *c_ptr;
-	int i;
+	char msg[1024];
+	int i, n = 0;
 
 	/* Loop over cards */
 	for (i = 0; i < g->deck_size; i++)
@@ -230,12 +233,70 @@ static int draw_empty(game *g)
 		/* Get card pointer */
 		c_ptr = &g->deck[i];
 
-		/* Check for card in draw deck */
-		if (c_ptr->where == WHERE_DECK) return 0;
+		/* Skip cards without goods */
+		if (!c_ptr->num_goods) continue;
+
+		/* Goods live only on active worlds */
+		if (!g->simulation && c_ptr->where != WHERE_ACTIVE)
+		{
+			/* Format evidence */
+			sprintf(msg, "%d goods on %s in zone %d!\n",
+			        c_ptr->num_goods, c_ptr->d_ptr->name,
+			        c_ptr->where);
+
+			/* This is a bug */
+			display_error(msg);
+			abort();
+		}
+
+		/* Count goods */
+		n += c_ptr->num_goods;
 	}
 
-	/* Deck is empty */
-	return 1;
+	/* Return count */
+	return n;
+}
+
+/*
+ * Return the physical-equivalent draw deck size.
+ *
+ * Goods are counters: no card ever leaves the deck to become a good, so
+ * our draw deck exceeds the physical (tabletop-equivalent) deck by
+ * exactly the goods in play plus the goods departed since the last
+ * reshuffle.  Zero means the physical deck is empty, which is the
+ * reshuffle trigger.
+ */
+static int physical_deck_count(game *g)
+{
+	char msg[1024];
+	int goods, n;
+
+	/* Count goods committed to worlds */
+	goods = count_goods_in_play(g);
+
+	/* Deck minus cards committed as in-play or departed goods */
+	n = count_draw(g) - goods - g->goods_departed;
+
+	/* Check for accounting error */
+	if (n < 0)
+	{
+		/* Simulations may overdraw: the AI's hidden-information
+		 * juggling (claim_card) takes deck cards without draw
+		 * accounting.  Treat the physical deck as empty. */
+		if (g->simulation) return 0;
+
+		/* Format evidence */
+		sprintf(msg, "Physical deck count is negative: %d in deck, "
+		        "%d goods in play, %d departed!\n",
+		        count_draw(g), goods, g->goods_departed);
+
+		/* Real games must never miscount */
+		display_error(msg);
+		abort();
+	}
+
+	/* Return count */
+	return n;
 }
 
 /*
@@ -370,7 +431,22 @@ void (*refresh_hook)(game *g) = NULL;
 static void refresh_draw(game *g)
 {
 	card *c_ptr;
+	char msg[1024];
 	int i;
+
+	/* The formula must say the physical deck is empty */
+	if (!g->simulation && physical_deck_count(g) != 0)
+	{
+		/* Format evidence */
+		sprintf(msg, "Reshuffle with %d physical cards left "
+		        "(%d in deck, %d goods in play, %d departed)!\n",
+		        physical_deck_count(g), count_draw(g),
+		        count_goods_in_play(g), g->goods_departed);
+
+		/* This is a bug */
+		display_error(msg);
+		abort();
+	}
 
 	/* Message */
 	if (!g->simulation)
@@ -395,8 +471,37 @@ static void refresh_draw(game *g)
 		c_ptr->misc &= ~MISC_KNOWN_MASK;
 	}
 
+	/* The departed goods' physical cards rejoin the pool */
+	g->goods_departed = 0;
+
 	/* Notify observers after every discarded card has moved. */
 	if (refresh_hook && !g->simulation) refresh_hook(g);
+}
+
+/*
+ * Reshuffle when the physical-equivalent deck is empty and the discard
+ * pile has cards to shuffle in.  Reshuffling at any other time is a bug
+ * (refresh_draw aborts).
+ */
+static void maybe_refresh(game *g)
+{
+	int i;
+
+	/* Check for cards still in the physical deck */
+	if (physical_deck_count(g) > 0) return;
+
+	/* Look for a discarded card to shuffle in */
+	for (i = 0; i < g->deck_size; i++)
+	{
+		/* Stop at first discarded card */
+		if (g->deck[i].where == WHERE_DISCARD) break;
+	}
+
+	/* Check for genuinely exhausted pool (dealing sites report) */
+	if (i == g->deck_size) return;
+
+	/* Refresh draw deck */
+	refresh_draw(g);
 }
 
 /*
@@ -408,25 +513,19 @@ static int random_draw(game *g)
 	card *c_ptr = NULL;
 	int i, n;
 
-	/* Count draw deck size */
-	n = count_draw(g);
+	/* Reshuffle if the physical deck is empty */
+	maybe_refresh(g);
 
-	/* Check for no cards */
-	if (!n)
+	/* Check for no physical cards to draw */
+	if (!physical_deck_count(g))
 	{
-		/* Refresh draw deck */
-		refresh_draw(g);
-
-		/* Recount */
-		n = count_draw(g);
-
-		/* Check for still no cards */
-		if (!n)
-		{
-			/* No card to return */
-			return -1;
-		}
+		/* No card to return */
+		return -1;
 	}
+
+	/* Count draw deck size (goods are anonymous counters, so every
+	 * deck card identity is drawable) */
+	n = count_draw(g);
 
 	/* Choose randomly */
 	n = game_rand(g) % n;
@@ -457,78 +556,9 @@ static int random_draw(game *g)
  */
 void (*draw_hook)(game *g, int who, int which) = NULL;
 
-/* Hook called when a physical card becomes a good in a real game. */
-void (*good_hook)(game *g, int world, int good) = NULL;
-
-/*
- * Check whether taking the given card for an unscripted purpose (a
- * good, or an unknown draw) would starve a scripted campaign draw:
- * true if the remaining scripted demand for the card's design is at
- * least the number of instances still circulating (deck + discard).
- */
-static int card_reserved(game *g, int which)
-{
-	design *d_ptr = g->deck[which].d_ptr;
-	int i, j, demand = 0, supply = 0;
-
-	/* Check for no campaign */
-	if (!g->camp || g->simulation) return 0;
-
-	/* Count remaining scripted demand for this design */
-	for (i = 0; i < g->num_players; i++)
-	{
-		/* Loop over remaining campaign entries */
-		for (j = g->camp_status->pos[i];
-		     j < g->camp_status->size[i]; j++)
-		{
-			/* Check for lazy entry demanding this design */
-			if (g->camp_status->index[i][j] == -2 &&
-			    g->camp_status->order_d[i][j] == d_ptr) demand++;
-		}
-	}
-
-	/* Check for no demand */
-	if (!demand) return 0;
-
-	/* Count circulating supply of this design */
-	for (i = 0; i < g->deck_size; i++)
-	{
-		/* Check for instance in deck or discard */
-		if (g->deck[i].d_ptr == d_ptr &&
-		    (g->deck[i].where == WHERE_DECK ||
-		     g->deck[i].where == WHERE_DISCARD)) supply++;
-	}
-
-	/* Reserved if taking one would starve future scripted draws */
-	return demand >= supply;
-}
-
-/*
- * Random draw avoiding cards reserved for scripted draws.
- */
-static int random_draw_unreserved(game *g)
-{
-	int which, tries;
-
-	/* Try several times to find an unreserved card */
-	for (tries = 0; tries < 200; tries++)
-	{
-		/* Draw randomly */
-		which = random_draw(g);
-
-		/* Check for failure or unreserved card */
-		if (which == -1 || !card_reserved(g, which)) return which;
-
-		/* Put rejected card back in the draw deck (random_draw
-		 * marks it as in-transit) */
-		g->deck[which].where = WHERE_DECK;
-	}
-
-	/* Give up and accept reserved card */
-	fprintf(stderr, "campaign: random draw could not avoid reserved "
-	        "card %s\n", g->deck[which].d_ptr->name);
-	return which;
-}
+/* Hook called when an (identityless) good is placed on a world in a
+ * real game.  Goods are counters: there is no card payload. */
+void (*good_hook)(game *g, int world) = NULL;
 
 /*
  * Return a random card from the draw deck, unless the given player
@@ -542,12 +572,15 @@ static int campaign_draw(game *g, int who)
 	/* Check for simulated game */
 	if (g->simulation) return random_draw(g);
 
+	/* Reshuffle if the physical deck is empty */
+	maybe_refresh(g);
+
 	/* Check for no campaign or exhausted campaign cards */
 	if (!g->camp ||
 	    g->camp_status->pos[who] >= g->camp_status->size[who])
 	{
-		/* Draw randomly, avoiding reserved cards */
-		which = random_draw_unreserved(g);
+		/* Draw randomly */
+		which = random_draw(g);
 	}
 	else
 	{
@@ -562,7 +595,11 @@ static int campaign_draw(game *g, int who)
 			        order_d[who][g->camp_status->pos[who]];
 			int k;
 
-			/* Look for an instance in the draw deck */
+			/* Look for an instance in the draw deck.  Goods
+			 * are counters, never cards, so our deck holds the
+			 * physical deck plus the anonymous committed cards:
+			 * any draw the source game could make must be
+			 * satisfiable from our two piles. */
 			which = -1;
 			for (k = 0; k < g->deck_size; k++)
 			{
@@ -574,7 +611,13 @@ static int campaign_draw(game *g, int who)
 				}
 			}
 
-			/* Look in the discard pile (pending reshuffle) */
+			/* Look in the discard pile: reshuffle micro-order
+			 * skew.  Within one phase this engine's canonical
+			 * ordering can fire the formula reshuffle before a
+			 * discard that the source game sequenced ahead of
+			 * its shuffle, stranding that identified card in
+			 * our discard until the next reshuffle (counts stay
+			 * exact; nothing goods-related). */
 			if (which == -1)
 			{
 				for (k = 0; k < g->deck_size; k++)
@@ -589,52 +632,15 @@ static int campaign_draw(game *g, int who)
 				}
 			}
 
-			/* Look among face-down goods: their identity is
-			 * anonymous, so swap the demanded card with a
-			 * random replacement from the deck */
+			/* Fail loudly with the evidence */
 			if (which == -1)
 			{
-				for (k = 0; k < g->deck_size; k++)
-				{
-					int sub;
-
-					if (g->deck[k].where != WHERE_GOOD ||
-					    g->deck[k].d_ptr != d_ptr)
-						continue;
-
-					/* Get replacement card */
-					sub = random_draw(g);
-					if (sub == -1) break;
-
-					/* Replacement becomes the good
-					 * (move_card maintains the zone
-					 * lists; the demanded card itself
-					 * is unlinked by our caller's
-					 * move_card) */
-					move_card(g, sub, g->deck[k].owner,
-					          WHERE_GOOD);
-					g->deck[sub].covering =
-						g->deck[k].covering;
-					g->deck[sub].misc &=
-						~MISC_KNOWN_MASK;
-
-					if (good_hook && !g->simulation)
-						good_hook(g, g->deck[sub].covering, sub);
-
-					/* Take the demanded card */
-					g->deck[k].covering = -1;
-					which = k;
-					break;
-				}
-			}
-
-			/* Fall back to random draw */
-			if (which == -1)
-			{
-				fprintf(stderr, "campaign: no instance of %s "
-				        "available for player %d; drawing "
-				        "randomly. Instances:", d_ptr->name,
-				        who);
+				fprintf(stderr, "campaign: no deck or discard "
+				        "instance of %s for player %d (deck %d, "
+				        "goods %d, departed %d). Instances:",
+				        d_ptr->name, who, count_draw(g),
+				        count_goods_in_play(g),
+				        g->goods_departed);
 				for (k = 0; k < g->deck_size; k++)
 				{
 					if (g->deck[k].d_ptr != d_ptr)
@@ -644,7 +650,7 @@ static int campaign_draw(game *g, int who)
 					        g->deck[k].owner);
 				}
 				fprintf(stderr, "\n");
-				which = random_draw_unreserved(g);
+				exit(1);
 			}
 		}
 
@@ -652,7 +658,7 @@ static int campaign_draw(game *g, int who)
 		g->camp_status->pos[who]++;
 
 		/* Check for random card */
-		if (which == -1) which = random_draw_unreserved(g);
+		if (which == -1) which = random_draw(g);
 	}
 
 	/* Notify draw hook */
@@ -674,6 +680,12 @@ int first_draw(game *g)
 	card *c_ptr = NULL;
 	int i;
 
+	/* Reshuffle if the physical deck is empty */
+	maybe_refresh(g);
+
+	/* Check for no physical cards to draw */
+	if (!physical_deck_count(g)) return -1;
+
 	/* Loop over cards */
 	for (i = 0; i < g->deck_size; i++)
 	{
@@ -687,34 +699,18 @@ int first_draw(game *g)
 		break;
 	}
 
-	/* Check for empty draw pile */
+	/* A non-empty physical deck implies a non-empty draw deck */
 	if (i == g->deck_size)
 	{
-		/* Refresh draw pile */
-		refresh_draw(g);
-
-		/* Loop over cards again */
-		for (i = 0; i < g->deck_size; i++)
-		{
-			/* Get card pointer */
-			c_ptr = &g->deck[i];
-
-			/* Skip cards not in draw deck */
-			if (c_ptr->where != WHERE_DECK) continue;
-
-			/* Stop at first valid card */
-			break;
-		}
-
-		/* Check for still empty */
-		if (i == g->deck_size) return -1;
+		display_error("Physical deck non-empty but draw deck is!\n");
+		abort();
 	}
 
 	/* Clear chosen card's location */
 	c_ptr->where = -1;
 
-	/* Check for just-emptied draw pile */
-	if (draw_empty(g)) refresh_draw(g);
+	/* Check for just-emptied physical deck */
+	maybe_refresh(g);
 
 	/* Return chosen card */
 	return i;
@@ -927,7 +923,7 @@ int draw_card(game *g, int who, char *reason)
 	}
 
 	/* Check for just-emptied draw pile */
-	if (draw_empty(g)) refresh_draw(g);
+	maybe_refresh(g);
 
 	return which;
 }
@@ -1740,6 +1736,32 @@ int count_goods(game *g, int who, int type)
 }
 
 /*
+ * Return the total number of goods on a player's worlds, regardless of
+ * type or newly-placed status (the end-of-game tiebreaker's count).
+ */
+int count_total_goods(game *g, int who)
+{
+	card *c_ptr;
+	int x, n = 0;
+
+	/* Start at first active card */
+	x = g->p[who].head[WHERE_ACTIVE];
+
+	/* Loop over cards */
+	for ( ; x != -1; x = g->deck[x].next)
+	{
+		/* Get card pointer */
+		c_ptr = &g->deck[x];
+
+		/* Add goods */
+		n += c_ptr->num_goods;
+	}
+
+	/* Return number found */
+	return n;
+}
+
+/*
  * Return a list of cards holding the given type of good.
  */
 int get_goods(game *g, int who, int goods[], int type)
@@ -1904,40 +1926,32 @@ int get_powers(game *g, int who, int phase, power_where *w_list)
 void add_good(game *g, int which)
 {
 	card *c_ptr;
-	int good;
 
 	/* Get card pointer */
 	c_ptr = &g->deck[which];
 
-	/* Check for simulated game */
-	if (g->simulation)
+	/* Goods only go on active worlds */
+	if (!g->simulation &&
+	    (c_ptr->where != WHERE_ACTIVE || c_ptr->owner < 0))
 	{
-		/* Use first available card */
-		good = first_draw(g);
-	}
-	else
-	{
-		/* Get random card to use as good, avoiding cards
-		 * reserved for scripted draws */
-		good = random_draw_unreserved(g);
+		display_error("Good added to a non-active card!\n");
+		abort();
 	}
 
-	/* Check for failure */
-	if (good == -1) return;
+	/* Reshuffle if the physical deck is empty */
+	maybe_refresh(g);
 
-	/* Check for just-emptied draw pile */
-	if (draw_empty(g)) refresh_draw(g);
+	/* Check for exhausted physical pool: no good can be committed */
+	if (!physical_deck_count(g)) return;
 
-	/* Move card to owner */
-	move_card(g, good, c_ptr->owner, WHERE_GOOD);
-
-	/* Mark good with covered card */
-	g->deck[good].covering = which;
-
-	/* Mark covered card */
+	/* Add the (identityless) good: no card leaves the deck, but the
+	 * good commits one physical-equivalent card */
 	c_ptr->num_goods++;
 
-	if (good_hook && !g->simulation) good_hook(g, which, good);
+	/* Check for just-emptied physical deck */
+	maybe_refresh(g);
+
+	if (good_hook && !g->simulation) good_hook(g, which);
 }
 
 /*
@@ -2425,7 +2439,7 @@ void phase_search(game *g)
 			}
 
 			/* Check for just-emptied draw pile */
-			if (draw_empty(g)) refresh_draw(g);
+			maybe_refresh(g);
 
 			/* Keep looking if no match */
 			if (!match) continue;
@@ -2523,7 +2537,7 @@ void phase_search(game *g)
 
 		/* Check for just-emptied draw pile */
 		/* TODO, game breaking change */
-		/* if (draw_empty(g)) refresh_draw(g); */
+		/* maybe_refresh(g); */
 	}
 
 	/* Clear any temp flags on cards */
@@ -6317,19 +6331,8 @@ int upgrade_chosen(game *g, int who, int replacement, int old)
 	/* Check for good on old card */
 	if (c_ptr->num_goods)
 	{
-		/* Start at first good card */
-		x = p_ptr->head[WHERE_GOOD];
-
-		/* Loop over cards */
-		for ( ; x != -1; x = g->deck[x].next)
-		{
-			/* Check for card covering upgraded world */
-			if (g->deck[x].covering == old)
-			{
-				/* Move good to discard */
-				move_card(g, x, -1, WHERE_DISCARD);
-			}
-		}
+		/* The goods depart with the upgraded world */
+		g->goods_departed += c_ptr->num_goods;
 
 		/* No more goods */
 		c_ptr->num_goods = 0;
@@ -6701,7 +6704,7 @@ static void flip_world(game *g, int who)
 	}
 
 	/* Check for just-emptied draw pile */
-	if (draw_empty(g)) refresh_draw(g);
+	maybe_refresh(g);
 
 	/* Check for non-military world */
 	if (c_ptr->d_ptr->type == TYPE_WORLD &&
@@ -8126,18 +8129,8 @@ int resolve_takeover(game *g, int who, int world, int special,
 		/* Check for good on world */
 		if (c_ptr->num_goods)
 		{
-			/* Start at player's first good */
-			x = g->p[c_ptr->start_owner].head[WHERE_GOOD];
-
-			/* Loop over goods */
-			for ( ; x != -1; x = g->deck[x].next)
-			{
-				/* Skip cards not covering world */
-				if (g->deck[x].covering != world) continue;
-
-				/* Discard good as well */
-				move_card(g, x, -1, WHERE_DISCARD);
-			}
+			/* The goods depart with the destroyed world */
+			g->goods_departed += c_ptr->num_goods;
 
 			/* World has no more goods */
 			c_ptr->num_goods = 0;
@@ -8164,22 +8157,8 @@ int resolve_takeover(game *g, int who, int world, int special,
 		message_add_formatted(g, msg, FORMAT_TAKEOVER);
 	}
 
-	/* Check for good on world */
-	if (c_ptr->num_goods)
-	{
-		/* Start at player's first good */
-		x = g->p[c_ptr->start_owner].head[WHERE_GOOD];
-
-		/* Loop over goods */
-		for ( ; x != -1; x = g->deck[x].next)
-		{
-			/* Skip cards not covering world */
-			if (g->deck[x].covering != world) continue;
-
-			/* Discard good as well */
-			move_card(g, x, who, WHERE_GOOD);
-		}
-	}
+	/* Goods ride with the taken-over world: num_goods stays on the
+	 * card, so there is nothing to transfer */
 
 	/* Check for cards saved underneath world */
 	if (c_ptr->d_ptr->flags & FLAG_START_SAVE)
@@ -8643,33 +8622,6 @@ int needed_callback(game *g, int who, int which, int special[], int num_special,
 	}
 }
 
-/*
- * Return the first good covering a world.
- */
-static int first_good(game *g, int who, int which)
-{
-	player *p_ptr;
-	int x;
-
-	/* Get player pointer */
-	p_ptr = &g->p[who];
-
-	/* Start at first good */
-	x = p_ptr->head[WHERE_GOOD];
-
-	/* Loop over goods */
-	for ( ; x != -1; x = g->deck[x].next)
-	{
-		/* Check for good covering given world */
-		if (g->deck[x].covering == which) return x;
-	}
-
-	/* No such good */
-	printf("Tried to get good where none exists\n");
-	abort();
-	return -1;
-}
-
 int trade_value(game *g, int who, card *c_ptr, int type, int no_bonus)
 {
 	power_where w_list[100];
@@ -8756,11 +8708,17 @@ void trade_chosen(game *g, int who, int which, int no_bonus)
 	/* Get card pointer */
 	c_ptr = &g->deck[which];
 
-	/* Move good card to discard */
-	move_card(g, first_good(g, who, which), -1, WHERE_DISCARD);
+	/* Check for missing good */
+	if (!c_ptr->num_goods)
+	{
+		display_error("Traded good from world without one!\n");
+		abort();
+	}
 
-	/* Uncover production card */
+	/* The good departs: its physical-equivalent card goes to the
+	 * physical discard pile until the next reshuffle */
 	c_ptr->num_goods--;
+	g->goods_departed++;
 
 	/* Get good type */
 	type = c_ptr->d_ptr->good_type;
@@ -9213,11 +9171,10 @@ int good_chosen(game *g, int who, int c_idx, int o_idx,
 			exit(1);
 		}
 
-		/* Move good card to discard */
-		move_card(g, first_good(g, who, g_list[i]), -1, WHERE_DISCARD);
-
-		/* Uncover production card */
+		/* The good departs: its physical-equivalent card goes to
+		 * the physical discard pile until the next reshuffle */
 		c_ptr->num_goods--;
+		g->goods_departed++;
 
 		/* Message */
 		if (!g->simulation)
@@ -9384,7 +9341,7 @@ static void draw_lucky(game *g, int who)
 	}
 
 	/* Check for just-emptied draw pile */
-	if (draw_empty(g)) refresh_draw(g);
+	maybe_refresh(g);
 
 	/* Check for correct guess */
 	if (cost == c_ptr->d_ptr->cost)
@@ -9528,7 +9485,7 @@ static void ante_card(game *g, int who)
 		}
 
 		/* Check for just-emptied draw pile */
-		if (draw_empty(g)) refresh_draw(g);
+		maybe_refresh(g);
 	}
 
 	/* Check for failure */
@@ -11781,47 +11738,46 @@ void phase_produce_start(game *g)
 			/* Skip non-shift powers */
 			if (!(o_ptr->code & P5_SHIFT_RARE)) continue;
 
-			/* Start at first good */
-			x = g->p[i].head[WHERE_GOOD];
+			/* Start at first active card */
+			x = g->p[i].head[WHERE_ACTIVE];
 
-			/* Loop over goods */
+			/* Loop over worlds bearing goods */
 			for ( ; x != -1; x = g->deck[x].next)
 			{
-				/* Get good pointer */
-				c_ptr = &g->deck[x];
-
-				/* Get card being covered */
-				y = c_ptr->covering;
-
 				/* Get card pointer */
-				b_ptr = &g->deck[y];
+				b_ptr = &g->deck[x];
+
+				/* Skip cards without goods */
+				if (!b_ptr->num_goods) continue;
 
 				/* Skip cards that are not Rare kind */
 				if (b_ptr->d_ptr->good_type != GOOD_RARE)
 					continue;
 
 				/* Skip card with shift power */
-				if (y == w_list[j].c_idx) continue;
+				if (x == w_list[j].c_idx) continue;
 
-				/* Move good to world */
-				b_ptr->num_goods = 0;
-				g->deck[w_list[j].c_idx].num_goods++;
-
-				/* Mark covered world */
-				c_ptr->covering = w_list[j].c_idx;
-
-				/* Check for simulated game */
-				if (!g->simulation)
+				/* Move goods to world (one message each) */
+				for (y = 0; y < b_ptr->num_goods; y++)
 				{
-					/* Format message */
-					sprintf(msg, "%s shifts good from %s to %s.\n",
-					             p_ptr->name,
-					             b_ptr->d_ptr->name,
-					             g->deck[w_list[j].c_idx].d_ptr->name);
+					/* Check for simulated game */
+					if (!g->simulation)
+					{
+						/* Format message */
+						sprintf(msg, "%s shifts good from %s to %s.\n",
+						             p_ptr->name,
+						             b_ptr->d_ptr->name,
+						             g->deck[w_list[j].c_idx].d_ptr->name);
 
-					/* Send message */
-					message_add(g, msg);
+						/* Send message */
+						message_add(g, msg);
+					}
 				}
+
+				/* Move goods to world */
+				g->deck[w_list[j].c_idx].num_goods +=
+					b_ptr->num_goods;
+				b_ptr->num_goods = 0;
 			}
 		}
 	}
@@ -15020,7 +14976,7 @@ void declare_winner(game *g)
 
 		/* Get tiebreaker */
 		th = count_player_area(g, i, WHERE_HAND) +
-		     count_player_area(g, i, WHERE_GOOD);
+		     count_total_goods(g, i);
 
 		/* Track biggest tiebreaker */
 		if (th > b_t) b_t = th;
@@ -15050,7 +15006,7 @@ void declare_winner(game *g)
 		th = count_player_area(g, i, WHERE_HAND);
 
 		/* Get tiebreaker (goods) */
-		tg = count_player_area(g, i, WHERE_GOOD);
+		tg = count_total_goods(g, i);
 
 		/* Check for simulation */
 		if (!g->simulation && num_b_s > 1)

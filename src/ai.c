@@ -1751,11 +1751,11 @@ static eval_cache *lookup_eval(game *g, int who)
 			value[len++] = (unsigned char)c_ptr->owner;
 		}
 
-		/* Check for used as good */
-		if (c_ptr->where == WHERE_GOOD)
+		/* Check for active card (goods are counters on worlds) */
+		if (c_ptr->where == WHERE_ACTIVE)
 		{
-			/* Add card being covered to value */
-			value[len++] = (unsigned char)c_ptr->covering;
+			/* Add number of goods to value */
+			value[len++] = (unsigned char)c_ptr->num_goods;
 		}
 	}
 
@@ -3158,7 +3158,7 @@ static void dump_game(game *g, game *sim)
 	for (i = 0; i < g->num_players; i++)
 	{
 		printf("Player %d:\n", i);
-		printf("%d cards active, %d cards seen, %d cards in hand, %d cards discarded, %d goods\n", count_player_area(sim, i, WHERE_ACTIVE), sim->p[i].drawn_round, count_player_area(sim, i, WHERE_HAND) + sim->p[i].fake_hand - sim->p[i].fake_discards, sim->p[i].fake_discards, count_player_area(sim, i, WHERE_GOOD));
+		printf("%d cards active, %d cards seen, %d cards in hand, %d cards discarded, %d goods\n", count_player_area(sim, i, WHERE_ACTIVE), sim->p[i].drawn_round, count_player_area(sim, i, WHERE_HAND) + sim->p[i].fake_hand - sim->p[i].fake_discards, sim->p[i].fake_discards, count_total_goods(sim, i));
 		printf("%d VP, %d prestige, %d prestige action used\n", sim->p[i].end_vp, sim->p[i].prestige, sim->p[i].prestige_action_used);
 		printf("Skipped develop: %d, Skipped settle: %d\n", sim->p[i].skip_develop, sim->p[i].skip_settle);
 		for (j = 0; j < g->deck_size; j++)
@@ -3271,13 +3271,6 @@ static int claim_card(game *g, int who, int which)
 
 		/* Check for failure to draw */
 		if (replace == -1) return 0;
-
-		/* Check for card used as good */
-		if (c_ptr->where == WHERE_GOOD)
-		{
-			/* Mark replacement with covered card */
-			g->deck[replace].covering = c_ptr->covering;
-		}
 
 		/* Replace claimed card */
 		move_card(g, replace, c_ptr->owner, c_ptr->where);
@@ -3547,7 +3540,7 @@ static void ai_choose_action_advanced_aux(game *g, int who, int oa,
 
 #ifdef DEBUG
 #if 0
-		printf("Trying %s/%s:\nactive %d, goods %d, hand %d, VP %d: score %f\n", action_name[a1], action_name[a2], count_player_area(&sim2, who, WHERE_ACTIVE), count_player_area(&sim2, who, WHERE_GOOD), count_player_area(&sim2, who, WHERE_HAND) + sim2.p[who].fake_hand - sim2.p[who].fake_discards, sim2.p[who].end_vp, score);
+		printf("Trying %s/%s:\nactive %d, goods %d, hand %d, VP %d: score %f\n", action_name[a1], action_name[a2], count_player_area(&sim2, who, WHERE_ACTIVE), count_total_goods(&sim2, who), count_player_area(&sim2, who, WHERE_HAND) + sim2.p[who].fake_hand - sim2.p[who].fake_discards, sim2.p[who].end_vp, score);
 		dump_active(&sim2, who);
 #endif
 		printf("Trying %s/%s: %d (%f)\n", action_name(adv_combo[act][0]), action_name(adv_combo[act][1]), num_computes - old_computes, score);
@@ -5436,7 +5429,7 @@ static int ai_choose_place_opp(game *g, int who, int phase, int special)
 
 	/* Assume players who trade without goods will settle a windfall */
 	if (phase == PHASE_SETTLE && player_chose(g, who, ACT_CONSUME_TRADE) &&
-	    !count_player_area(g, who, WHERE_GOOD))
+	    !count_total_goods(g, who))
 	{
 		/* Restrict to windfall worlds only */
 		windfall_only = 1;
@@ -6404,32 +6397,9 @@ static void ai_choose_defend_aux2(game *g, int who, int which, int opponent,
 			/* Check for failure to defend */
 			if (rv == 1)
 			{
-				/* Get card pointer */
-				c_ptr = &sim.deck[which];
-
-				/* Move card to opponent */
+				/* Move card to opponent (its goods are
+				 * counters on the card and ride along) */
 				move_card(&sim, which, opponent, WHERE_ACTIVE);
-
-				/* Check for good on card */
-				if (c_ptr->num_goods)
-				{
-					/* Start at first good */
-					x = sim.p[who].head[WHERE_GOOD];
-
-					/* Loop over goods */
-					for ( ; x != -1; x = sim.deck[x].next)
-					{
-						/* Check for covering good */
-						if (sim.deck[x].covering ==
-						    which)
-						{
-							/* Move good as well */
-							move_card(&sim, x,
-							          opponent,
-							          WHERE_GOOD);
-						}
-					}
-				}
 			}
 
 			/* Evaluate result */
@@ -6487,30 +6457,9 @@ static void ai_choose_defend_aux2(game *g, int who, int which, int opponent,
 		/* Check for failure to defend */
 		if (rv == 1)
 		{
-			/* Get card pointer */
-			c_ptr = &sim.deck[which];
-
-			/* Move card to opponent */
+			/* Move card to opponent (its goods are counters on
+			 * the card and ride along) */
 			move_card(&sim, which, opponent, WHERE_ACTIVE);
-
-			/* Check for good on card */
-			if (c_ptr->num_goods)
-			{
-				/* Start at first good */
-				x = sim.p[who].head[WHERE_GOOD];
-
-				/* Loop over goods */
-				for ( ; x != -1; x = sim.deck[x].next)
-				{
-					/* Check for covering good */
-					if (sim.deck[x].covering == which)
-					{
-						/* Move good as well */
-						move_card(&sim, x, opponent,
-						          WHERE_GOOD);
-					}
-				}
-			}
 		}
 
 		/* Evaluate result */

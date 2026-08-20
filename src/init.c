@@ -1113,6 +1113,9 @@ void init_game(game *g)
 	/* Set size of VP pool */
 	g->vp_pool = g->num_players * 12;
 
+	/* No goods have departed play */
+	g->goods_departed = 0;
+
 	/* Increase size of pool in third expansion */
 	if (exp_info[g->expanded].has_prestige) g->vp_pool += 5;
 

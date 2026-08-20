@@ -201,6 +201,9 @@
 #define WHERE_DISCARD  1
 #define WHERE_HAND     2
 #define WHERE_ACTIVE   3
+/* Goods are counters (card.num_goods), never cards: no card is ever
+ * placed in WHERE_GOOD anymore.  The slot number is retained so the
+ * non-engine clients' zone arrays and wire protocol keep their layout. */
 #define WHERE_GOOD     4
 #define WHERE_SAVED    5
 #define WHERE_ASIDE    6
@@ -731,7 +734,8 @@ typedef struct card
 	/* Card design */
 	design *d_ptr;
 
-	/* Card we are covering (if a good) */
+	/* Card we are covering (LEGACY: goods are counters, the engine
+	 * never sets this anymore; retained for non-engine clients) */
 	int16_t covering;
 
 	/* Number of goods placed on this card */
@@ -1005,6 +1009,13 @@ typedef struct game
 	/* Victory points remaining in the pool */
 	int8_t vp_pool;
 
+	/* Goods that left play (consumed, traded, or lost with their world)
+	 * since the last reshuffle.  Goods are counters, so their physical-
+	 * equivalent cards sit in the physical discard pile until then;
+	 * the deck reshuffles exactly when the goods in play plus this
+	 * counter equal the cards left in the draw deck. */
+	int16_t goods_departed;
+
 	/* Goals active in this game */
 	short goal_active[MAX_GOAL];
 
@@ -1145,7 +1156,7 @@ extern double ai_eval_choice(game *g, int who, int type, int list[], int num,
                              int special[], int ns, int arg1, int arg2,
                              int arg3);
 extern void (*draw_hook)(game *g, int who, int which);
-extern void (*good_hook)(game *g, int world, int good);
+extern void (*good_hook)(game *g, int world);
 extern void (*refresh_hook)(game *g);
 extern decisions gui_func;
 
@@ -1187,6 +1198,7 @@ extern void gain_prestige(game *g, int who, int amt, char *reason);
 extern void spend_prestige(game *g, int who, int amt);
 extern void check_prestige(game *g);
 extern int has_good(game *g, int who, int type);
+extern int count_total_goods(game *g, int who);
 extern int count_goods(game *g, int who, int type);
 extern void discard_callback(game *g, int who, int list[], int num);
 extern void discard_to(game *g, int who, int to, int discard_any);
