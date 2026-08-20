@@ -4792,6 +4792,32 @@ int settle_needed(game *g, int who, int which, int special[], int num_special,
 }
 
 /*
+ * The part of `given` hand-military cards not attributable to a fully
+ * used MILITARY_HAND power among the specials (the specials loop's
+ * running `hand_military_given`), recomputed for a known card count.
+ */
+static int hand_military_remainder(game *g, int special[], int num_special,
+                                   int given)
+{
+	card *c_ptr;
+	power *o_ptr;
+	int i, j;
+
+	for (i = 0; i < num_special; i++)
+	{
+		c_ptr = &g->deck[special[i]];
+		for (j = 0; j < c_ptr->d_ptr->num_power; j++)
+		{
+			o_ptr = &c_ptr->d_ptr->powers[j];
+			if (o_ptr->phase != PHASE_SETTLE) continue;
+			if (!(o_ptr->code & P3_MILITARY_HAND)) continue;
+			if (o_ptr->value <= given) given -= o_ptr->value;
+		}
+	}
+	return given;
+}
+
+/*
  * Called when player has chosen how to pay the world they are placing.
  *
  * We return 0 if the payment would not succeed.  We also return 0 in
@@ -4807,6 +4833,7 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	int conquer, pay_military = 0, military, cost, good;
 	int hand_military = 0, conquer_peaceful = 0;
 	int hand_military_given = num;
+	int boost_route = 0, pay_num = num;
 	int discard_zero = 0, takeover = 0;
 	int consume_reduce = 0, consume_military = 0;
 	int consume_special[2], num_consume_special;
@@ -5177,23 +5204,29 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	/* Check for using military from hand */
 	if (hand_military > 0)
 	{
-		/* Check for too many cards given */
-		if (num > hand_military) return 0;
+		/* A hand-discard boost may be spent and then ignored, the
+		 * world paid for by the non-military route (BGA; the same
+		 * rule NMT's tableau discard already follows).  The list then
+		 * holds the payment plus the boost's cards; split it once
+		 * the cost is known. */
+		if (pay_military || (!conquer && !conquer_peaceful))
+		{
+			boost_route = 1;
+		}
+		else
+		{
+			/* Check for too many cards given */
+			if (num > hand_military) return 0;
 
-		/* Reduce hand military strength to cards given */
-		hand_military = num;
+			/* Reduce hand military strength to cards given */
+			hand_military = num;
 
-		/* Remember bonus military for later */
-		p_ptr->bonus_military += num;
+			/* Remember bonus military for later */
+			p_ptr->bonus_military += num;
 
-		/* Remember amount of partially used hand military */
-		p_ptr->hand_military_spent = hand_military_given;
-
-		/* Military from hand is incompatible with pay for military */
-		if (pay_military) return 0;
-
-		/* Military from hand is incompatible with normal payment */
-		if (!conquer && !conquer_peaceful) return 0;
+			/* Remember amount of partially used hand military */
+			p_ptr->hand_military_spent = hand_military_given;
+		}
 	}
 
 	/* Must use "conquer peaceful" if only military worlds can be settled */
@@ -5328,6 +5361,25 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	/* Do not reduce cost below zero */
 	if (cost < 0) cost = 0;
 
+	/* Resolve a boost spent alongside the non-military route */
+	if (boost_route)
+	{
+		/* Cards beyond the payment went to the boost power */
+		int boost = num - cost;
+
+		/* Illegal: short of the cost, or more than the power takes */
+		if (boost < 0 || boost > hand_military) return 0;
+
+		/* The boost is on the books for the rest of the phase */
+		hand_military = boost;
+		p_ptr->bonus_military += boost;
+		p_ptr->hand_military_spent =
+			hand_military_remainder(g, special, num_special, boost);
+
+		/* Only the rest of the list pays for the world */
+		pay_num = cost;
+	}
+
 	/* Check for insufficient military strength (except for takeovers) */
 	if (!takeover && conquer && !pay_military &&
 	    military + hand_military < t_ptr->d_ptr->cost)
@@ -5346,14 +5398,14 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 #endif
 
 	/* Check for insufficient payment */
-	if ((!conquer || pay_military) && cost > num)
+	if ((!conquer || pay_military) && cost > pay_num)
 	{
 		/* Insufficient payment */
 		return 0;
 	}
 
 	/* Disallow overpayment */
-	if ((!conquer || pay_military) && cost < num)
+	if ((!conquer || pay_military) && cost < pay_num)
 	{
 		/* Too much payment */
 		return 0;
@@ -5537,7 +5589,7 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 			}
 
 			/* Format message */
-			sprintf(msg, "%s pays %d for %s.\n", p_ptr->name, num,
+			sprintf(msg, "%s pays %d for %s.\n", p_ptr->name, pay_num,
 			                                     t_ptr->d_ptr->name);
 		}
 
