@@ -428,6 +428,18 @@ int prestige_on_tile(game *g, int who)
  */
 void (*refresh_hook)(game *g) = NULL;
 
+/*
+ * Hook called (real games only) whenever cur_action changes inside a
+ * round: round start, each selected phase, round end.
+ */
+void (*phase_hook)(game *g) = NULL;
+
+/*
+ * Hook called (real games only) when a consume power is used, asked or
+ * automatic (c_idx < 0 is the prestige Consume-Trade bonus).
+ */
+void (*consume_hook)(game *g, int who, int c_idx, int o_idx) = NULL;
+
 static void refresh_draw(game *g)
 {
 	card *c_ptr;
@@ -9687,6 +9699,8 @@ void consume_chosen(game *g, int who, int c_idx, int o_idx)
 	/* Get player pointer */
 	p_ptr = &g->p[who];
 
+	if (consume_hook && !g->simulation) consume_hook(g, who, c_idx, o_idx);
+
 	/* XXX Check for prestige-trade chosen */
 	if (c_idx < 0)
 	{
@@ -13803,6 +13817,9 @@ int game_round(game *g)
 	/* Award prestige bonuses */
 	start_prestige(g);
 
+	/* Round start for the phase hook: the state the action asks see */
+	if (phase_hook && !g->simulation) phase_hook(g);
+
 	/* Loop over players */
 	for (i = 0; i < g->num_players; i++)
 	{
@@ -13974,6 +13991,8 @@ int game_round(game *g)
 		/* Skip unchosen phases */
 		if (!g->action_selected[i]) continue;
 
+		if (phase_hook && !g->simulation) phase_hook(g);
+
 		/* Check for rotation */
 		check_debug_rotate(g);
 
@@ -14041,6 +14060,8 @@ int game_round(game *g)
 
 	/* Set current phase to end of round */
 	g->cur_action = ACT_ROUND_END;
+
+	if (phase_hook && !g->simulation) phase_hook(g);
 
 	/* Check for rotation */
 	check_debug_rotate(g);
