@@ -611,13 +611,20 @@ static int campaign_draw(game *g, int who)
 				}
 			}
 
-			/* Look in the discard pile: reshuffle micro-order
-			 * skew.  Within one phase this engine's canonical
-			 * ordering can fire the formula reshuffle before a
-			 * discard that the source game sequenced ahead of
-			 * its shuffle, stranding that identified card in
-			 * our discard until the next reshuffle (counts stay
-			 * exact; nothing goods-related). */
+			/* Look in the discard pile: cross-player interleave
+			 * flexibility (dspyz-ruled 2026-08-31).  The rules
+			 * leave simultaneous-phase resolution order between
+			 * players unpinned and BGA's actual interleaving is
+			 * arbitrary (it follows neither seat order nor
+			 * start-world numbers, and single produce bursts
+			 * interleave players).  Both engines reshuffle
+			 * eagerly at the formula crossing, but our canonical
+			 * per-player order can reach that crossing with
+			 * different pile contents than the source game,
+			 * leaving an identified card on the wrong side of
+			 * the shuffle.  Resolve the pinned draw from the
+			 * discard exactly as the source game drew it
+			 * (counts stay exact; nothing goods-related). */
 			if (which == -1)
 			{
 				for (k = 0; k < g->deck_size; k++)
