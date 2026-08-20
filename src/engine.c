@@ -9394,183 +9394,6 @@ static void draw_lucky(game *g, int who)
 }
 
 /*
- * Ask player to choose a card to ante, and draw cards and possibly reward
- * one to the player.
- */
-static void ante_card(game *g, int who)
-{
-	player *p_ptr;
-	card *c_ptr;
-	int drawn[MAX_DECK];
-	char msg[1024];
-	int list[MAX_DECK], n = 0;
-	int i, x, chosen;
-	int cost, success = 0;
-
-	/* Get player pointer */
-	p_ptr = &g->p[who];
-
-	/* Start at first card */
-	x = p_ptr->head[WHERE_HAND];
-
-	/* Loop over player's cards in hand */
-	for ( ; x != -1; x = g->deck[x].next)
-	{
-		/* Get card pointer */
-		c_ptr = &g->deck[x];
-
-		/* Skip cards that are too cheap */
-		if (c_ptr->d_ptr->cost < 1) continue;
-
-		/* Skip cards that are too expensive */
-		if (c_ptr->d_ptr->cost > 6) continue;
-
-		/* Add card to list */
-		list[n++] = x;
-	}
-
-	/* Check for no cards available to ante */
-	if (!n) return;
-
-	/* Ask player to choose ante */
-	chosen = ask_player(g, who, CHOICE_ANTE, list, &n, NULL, NULL, 0, 0, 0);
-
-	/* Check for aborted game */
-	if (g->game_over) return;
-
-	/* Check for no card chosen */
-	if (chosen < 0) return;
-
-	/* Get card pointer */
-	c_ptr = &g->deck[chosen];
-
-	/* Get card cost */
-	cost = c_ptr->d_ptr->cost;
-
-	/* Message */
-	if (!g->simulation)
-	{
-		/* Format message */
-		sprintf(msg, "%s antes %s.\n", p_ptr->name, c_ptr->d_ptr->name);
-
-		/* Add message */
-		message_add(g, msg);
-	}
-
-	/* Draw cards */
-	for (i = 0; i < cost; i++)
-	{
-		/* Check for simulated game */
-		if (g->simulation)
-		{
-			/* Take top card */
-			drawn[i] = first_draw(g);
-
-			/* Consume random number */
-			x = game_rand(g);
-		}
-		else
-		{
-			/* Get random (or campaign) draw */
-			drawn[i] = campaign_draw(g, who);
-		}
-
-		/* Check for failure */
-		if (drawn[i] == -1) return;
-
-		/* Check for more expensive than ante */
-		if (g->deck[drawn[i]].d_ptr->cost > cost) success = 1;
-
-		/* Message */
-		if (!g->simulation)
-		{
-			/* Format message */
-			sprintf(msg, "%s draws %s.\n", p_ptr->name,
-			        g->deck[drawn[i]].d_ptr->name);
-
-			/* Add message */
-			message_add(g, msg);
-		}
-
-		/* Check for just-emptied draw pile */
-		maybe_refresh(g);
-	}
-
-	/* Check for failure */
-	if (!success)
-	{
-		/* Discard ante */
-		move_card(g, chosen, -1, WHERE_DISCARD);
-
-		/* Location is known to all */
-		g->deck[chosen].misc |= MISC_KNOWN_MASK;
-
-		/* Loop over drawn cards */
-		for (i = 0; i < cost; i++)
-		{
-			/* Discard drawn card */
-			move_card(g, drawn[i], -1, WHERE_DISCARD);
-
-			/* Location is known to all */
-			g->deck[drawn[i]].misc |= MISC_KNOWN_MASK;
-		}
-
-		/* Done */
-		return;
-	}
-
-	/* Clear list */
-	n = 0;
-
-	/* Loop over cards drawn */
-	for (i = 0; i < cost; i++)
-	{
-		/* Add drawn card to list */
-		list[n++] = drawn[i];
-	}
-
-	/* Ask player which card to keep */
-	chosen = ask_player(g, who, CHOICE_KEEP, list, &n, NULL, NULL, 0, 0, 0);
-
-	/* Check for aborted game */
-	if (g->game_over) return;
-
-	/* Message */
-	if (!g->simulation)
-	{
-		/* Format message */
-		sprintf(msg, "%s keeps %s.\n", p_ptr->name,
-		        g->deck[chosen].d_ptr->name);
-
-		/* Add message */
-		message_add(g, msg);
-	}
-
-	/* Loop over cards drawn */
-	for (i = 0; i < cost; i++)
-	{
-		/* Check for chosen card */
-		if (drawn[i] == chosen)
-		{
-			/* Give card to player */
-			move_card(g, chosen, who, WHERE_HAND);
-
-			/* Make card known to player */
-			g->deck[drawn[i]].misc &= ~MISC_KNOWN_MASK;
-			g->deck[drawn[i]].misc |= 1 << who;
-		}
-		else
-		{
-			/* Discard card */
-			move_card(g, drawn[i], -1, WHERE_DISCARD);
-
-			/* Location is known to all */
-			g->deck[drawn[i]].misc |= MISC_KNOWN_MASK;
-		}
-	}
-}
-
-/*
  * Called when player has chosen cards in hand to consume.
  */
 int consume_hand_chosen(game *g, int who, int c_idx, int o_idx,
@@ -9925,11 +9748,11 @@ void consume_chosen(game *g, int who, int c_idx, int o_idx)
 	/* Check for "ante card for card" */
 	if (o_ptr->code & P4_ANTE_CARD)
 	{
-		/* Ask player to ante */
-		ante_card(g, who);
-
-		/* Done */
-		return;
+		/* OBSOLETE: no design carries ANTE_CARD (see rftg.h) */
+		display_error("P4_ANTE_CARD reached consume_effect; the obsolete "
+		              "older-edition Gambling World power was deleted "
+		              "2026-08-31 and cards.txt must not declare it!\n");
+		abort();
 	}
 
 	/* Check for "VP" */
@@ -10383,8 +10206,7 @@ int consume_action(game *g, int who)
 		}
 
 		/* Check for other powers */
-		if (o_ptr->code & (P4_DRAW_LUCKY | P4_VP |
-		                   P4_ANTE_CARD))
+		if (o_ptr->code & (P4_DRAW_LUCKY | P4_VP))
 		{
 			/* Add power to list */
 			cidx[num] = w_ptr->c_idx;
@@ -10400,14 +10222,11 @@ int consume_action(game *g, int who)
 			 * BGA by dspyz, 2026-07-14); the fork REPORTS that truth via
 			 * bga_optional and ACCEPTS an external decline, so DRAW_LUCKY
 			 * alone no longer forces bga_optional. VP powers consume goods
-			 * and stay mandatory under the general consume-goods rule;
-			 * ANTE_CARD is the vestigial older-edition Gambling World
-			 * power (replaced by the lucky logic) and cannot occur in
-			 * current sets. */
+			 * and stay mandatory under the general consume-goods rule. */
 			optional = 0;
-			if (o_ptr->code & (P4_VP | P4_ANTE_CARD))
+			if (o_ptr->code & P4_VP)
 			{
-				/* Still mandatory on BGA (consumes goods / vestigial) */
+				/* Still mandatory on BGA (consumes goods) */
 				bga_optional = 0;
 			}
 		}
@@ -10428,10 +10247,16 @@ int consume_action(game *g, int who)
 	/* Check for no usable powers */
 	if (!num) return 0;
 
-	/* Check for more than one power to use. Ask omission uses stock
-	 * `optional` so a lone mandatory power (including a singleton
-	 * DRAW_LUCKY) emits no ask, byte-identical to stock. */
-	if (num > 1 || (num == 1 && optional))
+	/* Check for more than one power to use.  Ask omission follows
+	 * BGA-true optionality (`bga_optional`), NOT stock `optional`: a
+	 * lone skippable power must still be OFFERED, or the player has no
+	 * way to decline it.  Stock omitted the ask for a singleton
+	 * DRAW_LUCKY and went straight into the guess, which real BGA
+	 * transcripts refute — tables 881507279, 891077035, 899912168 and
+	 * 900911298 all end a Consume phase by walking away from a lone
+	 * Gambling World lucky (2026-08-31).  This matches rftg2's engine,
+	 * which asks unconditionally and reports exactly this flag. */
+	if (num > 1 || (num == 1 && bga_optional))
 	{
 		/* Ask player which power to use. Report BGA-true optionality
 		 * (bga_optional): the external player may decline a skippable

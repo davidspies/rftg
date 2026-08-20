@@ -8487,11 +8487,6 @@ void gui_choose_consume(game *g, int who, int cidx[], int oidx[], int *num,
 			/* Make string */
 			sprintf(buf, "Draw if lucky");
 		}
-		else if (o_ptr->code == P4_ANTE_CARD)
-		{
-			/* Make string */
-			sprintf(buf, "Ante card");
-		}
 		else if (o_ptr->code & P4_CONSUME_3_DIFF)
 		{
 			/* Make string */
@@ -9006,170 +9001,6 @@ int gui_choose_lucky(game *g, int who)
 
 	/* Return choice */
 	return i;
-}
-
-/*
- * Choose card to ante.
- */
-int gui_choose_ante(game *g, int who, int list[], int num)
-{
-	char buf[1024];
-	displayed *i_ptr;
-	int i, j;
-
-	/* Create prompt */
-	sprintf(buf, "Choose card to ante");
-
-	/* Set prompt */
-	gtk_label_set_text(GTK_LABEL(action_prompt), buf);
-
-	/* Set restrictions on action button */
-	action_restrict = RESTRICT_NUM;
-	action_min = 0;
-	action_max = 1;
-
-	/* Activate action button */
-	gtk_widget_set_sensitive(action_button, TRUE);
-
-	/* Reset displayed cards */
-	reset_cards(g, FALSE, TRUE);
-
-	/* Loop over cards in list */
-	for (i = 0; i < num; i++)
-	{
-		/* Loop over cards in hand */
-		for (j = 0; j < hand_size; j++)
-		{
-			/* Get hand pointer */
-			i_ptr = &hand[j];
-
-			/* Check for matching index */
-			if (i_ptr->index == list[i])
-			{
-				/* Card is eligible */
-				i_ptr->eligible = 1;
-				i_ptr->greedy = 1;
-
-				/* Card should be pushed up when selected */
-				i_ptr->push = 1;
-			}
-		}
-	}
-
-	/* Redraw everything */
-	redraw_everything();
-
-	/* Process events */
-	gtk_main();
-
-	/* Loop over cards in hand */
-	for (i = 0; i < hand_size; i++)
-	{
-		/* Get hand pointer */
-		i_ptr = &hand[i];
-
-		/* Check for selected */
-		if (i_ptr->selected)
-		{
-			/* Return selected card */
-			return i_ptr->index;
-		}
-	}
-
-	/* No card selected */
-	return -1;
-}
-
-/*
- * Choose a card to keep from a successful gamble.
- */
-int gui_choose_keep(game *g, int who, int list[], int num)
-{
-	card *c_ptr;
-	displayed *i_ptr;
-	char buf[1024];
-	int i;
-
-	/* Check for only one choice */
-	if (num == 1) return list[0];
-
-	/* Save special cards */
-	num_special_cards = num;
-	for (i = 0; i < num; ++i) special_cards[i] = &g->deck[list[i]];
-
-	/* Create prompt */
-	sprintf(buf, "Choose card to keep");
-
-	/* Set prompt */
-	gtk_label_set_text(GTK_LABEL(action_prompt), buf);
-
-	/* Reset displayed cards */
-	reset_cards(g, FALSE, TRUE);
-
-	/* Set button restriction */
-	action_restrict = RESTRICT_NUM;
-	action_min = action_max = 1;
-
-	/* Deactivate action button */
-	gtk_widget_set_sensitive(action_button, FALSE);
-
-	/* Add cards to "hand" */
-	for (i = 0; i < num; i++)
-	{
-		/* Get card pointer */
-		c_ptr = &real_game.deck[list[i]];
-
-		/* Get next entry in hand list */
-		i_ptr = &hand[hand_size++];
-
-		/* Reset structure */
-		reset_display(i_ptr);
-
-		/* Add card information */
-		i_ptr->index = list[i];
-		i_ptr->d_ptr = c_ptr->d_ptr;
-
-		/* Card is in hand */
-		i_ptr->hand = 1;
-
-		/* Card is eligible */
-		i_ptr->eligible = 1;
-		i_ptr->gapped = 1;
-		i_ptr->greedy = 1;
-
-		/* Highlight card when selected */
-		i_ptr->highlight = HIGH_YELLOW;
-		i_ptr->highlight_else = HIGH_RED;
-
-		/* Set tool tip */
-		i_ptr->tooltip = card_hand_tooltip(g, who, list[i]);
-	}
-
-	/* Redraw everything */
-	redraw_everything();
-
-	/* Process events */
-	gtk_main();
-
-	/* Clear special cards */
-	num_special_cards = 0;
-
-	/* Loop over cards in hand */
-	for (i = 0; i < hand_size; i++)
-	{
-		/* Get hand pointer */
-		i_ptr = &hand[i];
-
-		/* Check for selected */
-		if (i_ptr->selected)
-		{
-			/* Return choice */
-			return i_ptr->index;
-		}
-	}
-
-	/* Error */
-	return -1;
 }
 
 /*
@@ -10169,19 +10000,8 @@ static void gui_make_choice(game *g, int who, int type, int list[], int *nl,
 			rv = gui_choose_lucky(g, who);
 			break;
 
-		/* Choose card to ante */
-		case CHOICE_ANTE:
-
-			/* Choose card */
-			rv = gui_choose_ante(g, who, list, *nl);
-			break;
-
-		/* Choose card to keep in successful gamble */
-		case CHOICE_KEEP:
-
-			/* Choose card */
-			rv = gui_choose_keep(g, who, list, *nl);
-			break;
+		/* CHOICE_ANTE / CHOICE_KEEP are OBSOLETE (see rftg.h) and fall
+		 * through to the abort below. */
 
 		/* Choose windfall world to produce on */
 		case CHOICE_WINDFALL:
@@ -10231,8 +10051,12 @@ static void gui_make_choice(game *g, int who, int type, int list[], int *nl,
 
 		/* Error */
 		default:
-			display_error("Unknown choice type!\n");
+		{
+			char err[128];
+			sprintf(err, "Unknown choice type %d!\n", type);
+			display_error(err);
 			exit(1);
+		}
 	}
 
 	/* Check for aborted game */

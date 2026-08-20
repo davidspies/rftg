@@ -715,19 +715,8 @@ static void determine_message(game *g, int who, int type, int list[], int *nl,
 			sprintf(msg, "Choose Number");
 			break;
 
-		/* Choose card to ante */
-		case CHOICE_ANTE:
-
-			/* Create prompt */
-			sprintf(msg, "Choose card to ante");
-			break;
-
-		/* Choose card to keep in successful gamble */
-		case CHOICE_KEEP:
-
-			/* Create prompt */
-			sprintf(msg, "Choose card to keep");
-			break;
+		/* CHOICE_ANTE / CHOICE_KEEP are OBSOLETE (see rftg.h) and fall
+		 * through to the abort below. */
 
 		/* Choose windfall world to produce on */
 		case CHOICE_WINDFALL:
@@ -777,8 +766,12 @@ static void determine_message(game *g, int who, int type, int list[], int *nl,
 
 		/* Error */
 		default:
-			display_error("Unknown choice type!\n");
+		{
+			char err[128];
+			sprintf(err, "Unknown choice type %d!\n", type);
+			display_error(err);
 			exit(1);
+		}
 	}
 }
 
