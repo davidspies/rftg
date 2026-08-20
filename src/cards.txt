@@ -1222,7 +1222,7 @@ T:1:1:1
 E@2:1
 #E:0:0:1:1:0
 P:4:CONSUME_ANY | GET_VP:1:1
-P:4:DRAW_LUCKY:0:0
+P:4:ANTE_CARD:0:0
 
 N:Alien Uplift Center
 T:1:5:4

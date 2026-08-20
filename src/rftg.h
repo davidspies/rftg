@@ -408,12 +408,6 @@
 #define P4_DRAW               (1ULL << 26)
 #define P4_DRAW_LUCKY         (1ULL << 27)
 #define P4_DISCARD_HAND       (1ULL << 28)
-/* OBSOLETE 2026-08-31: ANTE_CARD was the older-edition Gambling World
- * power.  BGA always plays the DRAW_LUCKY design (dspyz testimony
- * 2026-08-09, confirmed live by fixture table 899912168), so cards.txt
- * declares it nowhere and the machinery is deleted.  The bit keeps its
- * slot because power_name[] in init.c is positional; lookup_power()
- * rejects the name loudly. */
 #define P4_ANTE_CARD          (1ULL << 29)
 #define P4_VP                 (1ULL << 30)
 
@@ -579,9 +573,6 @@
 #define CHOICE_CONSUME_HAND     14
 #define CHOICE_GOOD             15
 #define CHOICE_LUCKY            16
-/* OBSOLETE 2026-08-31 with P4_ANTE_CARD: never asked.  The numbers stay
- * reserved because this enum is the wire format shared with rftg2 (whose
- * frozen legacy enum keeps 17/18 unreachable too). */
 #define CHOICE_ANTE             17
 #define CHOICE_KEEP             18
 #define CHOICE_WINDFALL         19

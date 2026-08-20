@@ -218,8 +218,6 @@ static char *power_name[6][64] =
 		"DRAW",
 		"DRAW_LUCKY",
 		"DISCARD_HAND",
-		/* OBSOLETE (see rftg.h); the slot is positional, so the name
-		 * stays and lookup_power() rejects it. */
 		"ANTE_CARD",
 		"VP",
 		NULL,
@@ -341,21 +339,7 @@ static uint64_t lookup_power(char *ptr, int phase)
 	while (power_name[phase][i])
 	{
 		/* Check this power */
-		if (!strcmp(power_name[phase][i], ptr))
-		{
-			/* Reject the obsolete older-edition Gambling World power */
-			if (phase == 4 && (1ULL << i) == P4_ANTE_CARD)
-			{
-				sprintf(message, "cards.txt declares the obsolete "
-				        "ANTE_CARD power; BGA always plays the "
-				        "DRAW_LUCKY Gambling World and the ante "
-				        "machinery was deleted 2026-08-31!\n");
-				display_error(message);
-				exit(1);
-			}
-
-			return 1ULL << i;
-		}
+		if (!strcmp(power_name[phase][i], ptr)) return 1ULL << i;
 
 		/* Next effect */
 		i++;

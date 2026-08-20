@@ -7055,7 +7055,7 @@ static void ai_choose_consume(game *g, int who, int cidx[], int oidx[],
 		o_ptr = &c_ptr->d_ptr->powers[oidx[i]];
 
 		/* Do not compare unusual powers */
-		if (o_ptr->code & (P4_DISCARD_HAND |
+		if (o_ptr->code & (P4_DISCARD_HAND | P4_ANTE_CARD |
 		                   P4_CONSUME_PRESTIGE | P4_CONSUME_ALL |
 		                   P4_CONSUME_3_DIFF | P4_CONSUME_N_DIFF))
 		{
@@ -7082,7 +7082,7 @@ static void ai_choose_consume(game *g, int who, int cidx[], int oidx[],
 			n_ptr = &b_ptr->d_ptr->powers[oidx[j]];
 
 			/* Do not compare unusual powers */
-			if (n_ptr->code & (P4_DISCARD_HAND |
+			if (n_ptr->code & (P4_DISCARD_HAND | P4_ANTE_CARD |
 			                   P4_CONSUME_PRESTIGE |
 			                   P4_CONSUME_ALL | P4_CONSUME_3_DIFF |
 			                   P4_CONSUME_N_DIFF))
@@ -7688,6 +7688,152 @@ static int ai_choose_lucky(game *g, int who)
 
 	/* Return best cost chance */
 	return b_c;
+}
+
+/*
+ * Combinations of n choose k.
+ */
+static unsigned long long choose(int n, int k)
+{
+	unsigned long long r = 1;
+	int i;
+
+	/* Degenerate case */
+	if (k > n) return 0;
+
+	/* Pick smaller symmetry */
+	if (k > n / 2) k = n - k;
+
+	/* Loop over k's */
+	for (i = 1; i <= k; i++)
+	{
+		/* Accumulate combinations */
+		r = r * (n - k + i) / i;
+	}
+
+	/* Return result */
+	return r;
+}
+
+/*
+ * Choose ante card.
+ */
+static int ai_choose_ante(game *g, int who, int list[], int num)
+{
+	game sim;
+	card *c_ptr;
+	double score, chance, b_s = -1;
+	int i, j, b_i = -1, count = 0, num_win;
+	int cost;
+
+	/* Don't ante in simulated game */
+	if (g->simulation) return -1;
+
+	/* Count unknown cards in deck */
+	for (i = 0; i < g->deck_size; i++)
+	{
+		/* Get card pointer */
+		c_ptr = &g->deck[i];
+
+		/* Skip known cards */
+		if (c_ptr->misc & (1 << who)) continue;
+
+		/* Count card */
+		count++;
+	}
+
+	/* Get base score if we choose nothing */
+	b_s = eval_game(g, who);
+
+	/* Loop over card choices */
+	for (i = 0; i < num; i++)
+	{
+		/* Get card cost */
+		cost = g->deck[list[i]].d_ptr->cost;
+
+		/* Assume no more expensive cards available */
+		num_win = 0;
+
+		/* Count unknown cards in deck */
+		for (j = 0; j < g->deck_size; j++)
+		{
+			/* Get card pointer */
+			c_ptr = &g->deck[j];
+
+			/* Skip known cards */
+			if (c_ptr->misc & (1 << who)) continue;
+
+			/* Check for more expensive card */
+			if (c_ptr->d_ptr->cost > cost) num_win++;
+		}
+
+		/* Get chance of losing */
+		chance = 1.0 * choose(count - num_win, cost) /
+		               choose(count, cost);
+
+		/* Simulate game */
+		simulate_game(&sim, g, who);
+
+		/* Assume we lose the card */
+		move_card(&sim, list[i], -1, WHERE_DISCARD);
+
+		/* Start with losing chance */
+		score = chance * eval_game(&sim, who);
+
+		/* Simulate game */
+		simulate_game(&sim, g, who);
+
+		/* Assume we win a card */
+		draw_card(&sim, who, NULL);
+
+		/* Accumulate score */
+		score += (1.0 - chance) * eval_game(&sim, who);
+
+		/* Check for better score */
+		if (score_better(score, b_s))
+		{
+			/* Track best score and choice */
+			b_s = score;
+			b_i = list[i];
+		}
+	}
+
+	/* Return best chance */
+	return b_i;
+}
+
+/*
+ * Choose card to keep after successful gamble.
+ */
+static int ai_choose_keep(game *g, int who, int list[], int num)
+{
+	game sim;
+	double score, b_s = -1;
+	int i, b_i = -1;
+
+	/* Loop over choices */
+	for (i = 0; i < num; i++)
+	{
+		/* Simulate game */
+		simulate_game(&sim, g, who);
+
+		/* Take card and put it in hand */
+		move_card(&sim, list[i], who, WHERE_HAND);
+
+		/* Score game */
+		score = eval_game(&sim, who);
+
+		/* Check for better */
+		if (score_better(score, b_s))
+		{
+			/* Track best score and choice */
+			b_s = score;
+			b_i = list[i];
+		}
+	}
+
+	/* Return best choice */
+	return b_i;
 }
 
 /*
@@ -8301,10 +8447,19 @@ static void ai_make_choice(game *g, int who, int type, int list[], int *nl,
 			rv = ai_choose_lucky(g, who);
 			break;
 
-		/* CHOICE_ANTE / CHOICE_KEEP are OBSOLETE (see rftg.h): the
-		 * older-edition Gambling World ANTE_CARD power was deleted
-		 * 2026-08-31, so neither choice can be asked any more.  They
-		 * fall through to the abort below. */
+		/* Choose card to ante */
+		case CHOICE_ANTE:
+
+			/* Choose card */
+			rv = ai_choose_ante(g, who, list, *nl);
+			break;
+
+		/* Choose card to keep in successful gamble */
+		case CHOICE_KEEP:
+
+			/* Choose card */
+			rv = ai_choose_keep(g, who, list, *nl);
+			break;
 
 		/* Choose windfall world to produce on */
 		case CHOICE_WINDFALL:
@@ -8354,12 +8509,8 @@ static void ai_make_choice(game *g, int who, int type, int list[], int *nl,
 
 		/* Error */
 		default:
-		{
-			char err[128];
-			sprintf(err, "Unknown choice type %d!\n", type);
-			display_error(err);
+			display_error("Unknown choice type!\n");
 			abort();
-		}
 	}
 
 	/* Get player pointer */
