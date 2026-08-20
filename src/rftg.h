@@ -1161,6 +1161,9 @@ extern void (*refresh_hook)(game *g);
 extern void (*phase_hook)(game *g);
 extern void (*consume_hook)(game *g, int who, int c_idx, int o_idx);
 extern void (*spend_hook)(game *g, int who, int world);
+extern int (*settle_boost_hook)(game *g, int who, int which, int list[],
+                                int num, int special[], int num_special,
+                                int boost_of[]);
 extern decisions gui_func;
 
 /*

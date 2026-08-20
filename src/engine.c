@@ -447,6 +447,20 @@ void (*consume_hook)(game *g, int who, int c_idx, int o_idx) = NULL;
  */
 void (*spend_hook)(game *g, int who, int world) = NULL;
 
+/*
+ * Hook consulted by settle_callback (real games and their simulations)
+ * when a payment uses MILITARY_HAND specials: the RECORD's assignment of
+ * the paid list to the boost powers.  On a match it fills boost_of[i] with
+ * the special card index each list card was discarded to (-1 for a
+ * payment card) and returns 1.  It returns 0 when it has no assignment for
+ * this exact payment (who, world, list); the list then follows Keldon's own
+ * wire convention -- every listed card is a boost card, military route
+ * only -- which is what Keldon's AI and GUI mean by it.
+ */
+int (*settle_boost_hook)(game *g, int who, int which, int list[], int num,
+                         int special[], int num_special,
+                         int boost_of[]) = NULL;
+
 static void refresh_draw(game *g)
 {
 	card *c_ptr;
@@ -4792,32 +4806,6 @@ int settle_needed(game *g, int who, int which, int special[], int num_special,
 }
 
 /*
- * The part of `given` hand-military cards not attributable to a fully
- * used MILITARY_HAND power among the specials (the specials loop's
- * running `hand_military_given`), recomputed for a known card count.
- */
-static int hand_military_remainder(game *g, int special[], int num_special,
-                                   int given)
-{
-	card *c_ptr;
-	power *o_ptr;
-	int i, j;
-
-	for (i = 0; i < num_special; i++)
-	{
-		c_ptr = &g->deck[special[i]];
-		for (j = 0; j < c_ptr->d_ptr->num_power; j++)
-		{
-			o_ptr = &c_ptr->d_ptr->powers[j];
-			if (o_ptr->phase != PHASE_SETTLE) continue;
-			if (!(o_ptr->code & P3_MILITARY_HAND)) continue;
-			if (o_ptr->value <= given) given -= o_ptr->value;
-		}
-	}
-	return given;
-}
-
-/*
  * Called when player has chosen how to pay the world they are placing.
  *
  * We return 0 if the payment would not succeed.  We also return 0 in
@@ -4833,7 +4821,10 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	int conquer, pay_military = 0, military, cost, good;
 	int hand_military = 0, conquer_peaceful = 0;
 	int hand_military_given = num;
-	int boost_route = 0, pay_num = num;
+	int pay_num = num;
+	int boost_of[MAX_DECK], explicit_boost = 0;
+	int mh_value[MAX_DECK], sp_boost[MAX_DECK];
+	int boost_total = 0, spent_partial = 0;
 	int discard_zero = 0, takeover = 0;
 	int consume_reduce = 0, consume_military = 0;
 	int consume_special[2], num_consume_special;
@@ -4879,6 +4870,34 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 
 	/* Get all active settle powers */
 	n = get_powers(g, who, PHASE_SETTLE, w_list);
+
+	/* The record's boost assignment for this payment, if any: which
+	 * special each listed card was discarded to (-1 = payment card). */
+	for (i = 0; i < num_special; i++) { mh_value[i] = 0; sp_boost[i] = 0; }
+	if (settle_boost_hook &&
+	    settle_boost_hook(g, who, which, list, num, special, num_special,
+	                      boost_of))
+	{
+		explicit_boost = 1;
+		for (i = 0; i < num; i++)
+		{
+			if (boost_of[i] < 0) continue;
+			for (j = 0; j < num_special; j++)
+				if (special[j] == boost_of[i]) break;
+			if (j == num_special)
+			{
+				fprintf(stderr, "settle_callback: boost card %s "
+				        "assigned to %s, which is not among the "
+				        "specials used\n",
+				        g->deck[list[i]].d_ptr->name,
+				        g->deck[boost_of[i]].d_ptr->name);
+				return 0;
+			}
+			sp_boost[j]++;
+			boost_total++;
+		}
+		pay_num = num - boost_total;
+	}
 
 	/* Loop over special cards used */
 	for (i = 0; i < num_special; i++)
@@ -5023,8 +5042,9 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 				/* Mark power as used */
 				c_ptr->misc |= 1 << (MISC_USED_SHIFT + j);
 
-				/* Assume cards are for military strength */
+				/* Capacity of the hand-military powers used */
 				hand_military += o_ptr->value;
+				mh_value[i] += o_ptr->value;
 			}
 
 			/* Check for consume to reduce cost */
@@ -5202,31 +5222,58 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	}
 
 	/* Check for using military from hand */
-	if (hand_military > 0)
+	if (explicit_boost)
 	{
-		/* A hand-discard boost may be spent and then ignored, the
-		 * world paid for by the non-military route (BGA; the same
-		 * rule NMT's tableau discard already follows).  The list then
-		 * holds the payment plus the boost's cards; split it once
-		 * the cost is known. */
-		if (pay_military || (!conquer && !conquer_peaceful))
+		/* The record names each boost power's cards: validate each
+		 * use against its power's capacity.  The boost stays on the
+		 * books for the rest of the phase whether or not the route
+		 * taken needed it (BGA lets a player boost, fall short, and
+		 * pay the non-military way -- as NMT's tableau discard could
+		 * already). */
+		for (i = 0; i < num_special; i++)
 		{
-			boost_route = 1;
+			if (!sp_boost[i]) continue;
+			if (!mh_value[i] || sp_boost[i] > mh_value[i])
+			{
+				fprintf(stderr, "settle_callback: %d card(s) "
+				        "discarded to %s, which takes %d\n",
+				        sp_boost[i],
+				        g->deck[special[i]].d_ptr->name,
+				        mh_value[i]);
+				return 0;
+			}
+			if (sp_boost[i] < mh_value[i])
+				spent_partial += sp_boost[i];
 		}
-		else
-		{
-			/* Check for too many cards given */
-			if (num > hand_military) return 0;
+		hand_military = boost_total;
+		p_ptr->bonus_military += boost_total;
+		p_ptr->hand_military_spent = spent_partial;
+	}
+	else if (hand_military > 0)
+	{
+		/* Keldon's own convention (no record): every listed card
+		 * is a boost card, and the military route is the only one. */
 
-			/* Reduce hand military strength to cards given */
-			hand_military = num;
+		/* Check for too many cards given */
+		if (num > hand_military) return 0;
 
-			/* Remember bonus military for later */
-			p_ptr->bonus_military += num;
+		/* Reduce hand military strength to cards given */
+		hand_military = num;
 
-			/* Remember amount of partially used hand military */
-			p_ptr->hand_military_spent = hand_military_given;
-		}
+		/* Remember bonus military for later */
+		p_ptr->bonus_military += num;
+
+		/* Remember amount of partially used hand military */
+		p_ptr->hand_military_spent = hand_military_given;
+
+		/* Military from hand is incompatible with pay for military */
+		if (pay_military) return 0;
+
+		/* Military from hand is incompatible with normal payment */
+		if (!conquer && !conquer_peaceful) return 0;
+
+		/* No card pays for the world */
+		pay_num = 0;
 	}
 
 	/* Must use "conquer peaceful" if only military worlds can be settled */
@@ -5361,25 +5408,6 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	/* Do not reduce cost below zero */
 	if (cost < 0) cost = 0;
 
-	/* Resolve a boost spent alongside the non-military route */
-	if (boost_route)
-	{
-		/* Cards beyond the payment went to the boost power */
-		int boost = num - cost;
-
-		/* Illegal: short of the cost, or more than the power takes */
-		if (boost < 0 || boost > hand_military) return 0;
-
-		/* The boost is on the books for the rest of the phase */
-		hand_military = boost;
-		p_ptr->bonus_military += boost;
-		p_ptr->hand_military_spent =
-			hand_military_remainder(g, special, num_special, boost);
-
-		/* Only the rest of the list pays for the world */
-		pay_num = cost;
-	}
-
 	/* Check for insufficient military strength (except for takeovers) */
 	if (!takeover && conquer && !pay_military &&
 	    military + hand_military < t_ptr->d_ptr->cost)
@@ -5412,7 +5440,7 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 	}
 
 	/* Disallow normal paying for military */
-	if (conquer && !pay_military && num > 0 && hand_military == 0)
+	if (conquer && !pay_military && pay_num > 0)
 	{
 		/* Too much payment */
 		return 0;
@@ -5549,7 +5577,7 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 		{
 			/* Format message */
 			sprintf(msg, "%s pays %d for extra military.\n",
-			        p_ptr->name, num);
+			        p_ptr->name, hand_military);
 		}
 
 		/* Otherwise no message for takeover attempt */
@@ -5564,7 +5592,8 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 		{
 			/* Format message */
 			sprintf(msg, "%s pays %d to conquer %s.\n",
-			              p_ptr->name, num, t_ptr->d_ptr->name);
+			              p_ptr->name, hand_military,
+			              t_ptr->d_ptr->name);
 		}
 
 		/* Check for normal conquer */
