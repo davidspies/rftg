@@ -10507,14 +10507,14 @@ int consume_action(game *g, int who)
 			 * alone no longer forces bga_optional. VP powers consume goods
 			 * and stay mandatory under the general consume-goods rule.
 			 * ANTE_CARD is the RvI-reprint Gambling World power (BGA
-			 * "rvi_gambling", "May ante a card..."): BGA-optional in
-			 * principle, but no BGA transcript has shown it offered or
-			 * declined yet, so it keeps stock's mandatory-ask shape until
-			 * the ANTE TODO lands (agent-memory, 2026-08-20). */
+			 * "rvi_gambling", "May ante a card..."): skippable like the
+			 * guess, so it does not force bga_optional either -- BGA table
+			 * 899912168 ends a Consume phase walking away from a lone
+			 * unused ante (2026-08-20). */
 			optional = 0;
-			if (o_ptr->code & (P4_VP | P4_ANTE_CARD))
+			if (o_ptr->code & P4_VP)
 			{
-				/* Still mandatory on BGA (consumes goods) / untested */
+				/* Still mandatory on BGA (consumes goods) */
 				bga_optional = 0;
 			}
 		}
