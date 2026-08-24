@@ -705,8 +705,13 @@ static int campaign_draw(game *g, int who)
 		 * (random_draw clears the location): callers that hold the
 		 * card across further engine work before filing it -- the
 		 * Gambling World ante flips sit unfiled across the KEEP
-		 * ask -- must not see it still counted in the deck. */
-		else if (which != -1) g->deck[which].where = -1;
+		 * ask -- must not see it still counted in the deck.  Only
+		 * for OWNERLESS cards (deck/discard): an eagerly-resolved
+		 * entry sits set-aside in its player's WHERE_CAMPAIGN list
+		 * (init.c), and a raw location write would corrupt that
+		 * list -- move_card handles owned cards. */
+		else if (which != -1 && g->deck[which].owner == -1)
+			g->deck[which].where = -1;
 	}
 
 	/* Notify draw hook */
