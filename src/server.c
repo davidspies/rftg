@@ -1884,6 +1884,17 @@ static void obfuscate_game(game *ob, game *g, int who)
 			}
 		}
 	}
+
+	/* The raw shuffling above bypassed card_set_where: recount the
+	 * obfuscated copy's zone caches so they stay exact if anything
+	 * downstream consults them */
+	ob->deck_count = 0;
+	ob->goods_in_play = 0;
+	for (i = 0; i < ob->deck_size; i++)
+	{
+		if (ob->deck[i].where == WHERE_DECK) ob->deck_count++;
+		ob->goods_in_play += ob->deck[i].num_goods;
+	}
 }
 
 /*

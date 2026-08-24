@@ -1200,6 +1200,12 @@ void init_game(game *g)
 		}
 	}
 
+	/* Seed the O(1) zone caches: every card starts in the draw
+	 * deck carrying no goods (all later mutations flow through
+	 * card_set_where/card_add_goods) */
+	g->deck_count = g->deck_size;
+	g->goods_in_play = 0;
+
 	/* Loop over players */
 	for (i = 0; i < g->num_players; i++)
 	{

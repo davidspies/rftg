@@ -1023,6 +1023,18 @@ typedef struct game
 	 * counter equal the cards left in the draw deck. */
 	int16_t goods_departed;
 
+	/* O(1) zone caches, maintained by card_set_where/card_add_goods
+	 * (engine.c) at every mutation: the count of cards in WHERE_DECK
+	 * and the total goods on worlds.  The reshuffle formula
+	 * (physical_deck_count) reads these instead of scanning the deck
+	 * on every draw -- the scans burned 73% of AI-simulation cycles
+	 * (6-player playouts run thousands of simulated draws per real
+	 * decision).  Real games still run the full scans as integrity
+	 * asserts (count_draw / count_goods_in_play), so a missed cache
+	 * update aborts there. */
+	int16_t deck_count;
+	int16_t goods_in_play;
+
 	/* Goals active in this game */
 	short goal_active[MAX_GOAL];
 
@@ -1202,6 +1214,8 @@ extern int player_chose(game *g, int who, int act);
 extern int prestige_on_tile(game *g, int who);
 extern int first_draw(game *g);
 extern void move_card(game *g, int which, int who, int where);
+extern void card_set_where(game *g, int which, int where);
+extern void card_add_goods(game *g, int which, int delta);
 extern void move_start(game *g, int which, int who, int where);
 extern int draw_card(game *g, int who, char *reason);
 extern void draw_cards(game *g, int who, int num, char *reason);

@@ -911,9 +911,11 @@ static void handle_status_card(char *ptr, int size)
 	if (!get_integer(&x, msg_buf, size, &ptr)) goto format_error;
 	c_ptr->order = x;
 
-	/* Read number of goods */
+	/* Read number of goods (through the cache helper: the client's
+	 * real_game must keep its goods-in-play cache exact) */
 	if (!get_integer(&x, msg_buf, size, &ptr)) goto format_error;
-	c_ptr->num_goods = x;
+	card_add_goods(&real_game, (int)(c_ptr - real_game.deck),
+	               x - c_ptr->num_goods);
 
 	/* Read covered card */
 	if (!get_integer(&x, msg_buf, size, &ptr)) goto format_error;

@@ -195,12 +195,53 @@ int takeovers_enabled(game *g)
 }
 
 /*
+ * Write a card's location, maintaining the O(1) draw-deck cache.
+ *
+ * EVERY write to card.where must flow through here (move_card included):
+ * the reshuffle formula reads g->deck_count instead of scanning the
+ * deck, and a bypassing raw write desyncs it.  Real games cross-check
+ * the cache against a full scan in count_draw, so a missed conversion
+ * aborts there with evidence.
+ */
+void card_set_where(game *g, int which, int where)
+{
+	card *c_ptr = &g->deck[which];
+
+	/* Adjust the draw-deck cache for the transition */
+	if (c_ptr->where == WHERE_DECK) g->deck_count--;
+	if (where == WHERE_DECK) g->deck_count++;
+
+	/* Write the location */
+	c_ptr->where = where;
+}
+
+/*
+ * Adjust a card's goods counter, maintaining the O(1) goods-in-play
+ * cache.  EVERY change to card.num_goods must flow through here; real
+ * games cross-check in count_goods_in_play.
+ */
+void card_add_goods(game *g, int which, int delta)
+{
+	/* Adjust the card's counter and the game-wide cache together */
+	g->deck[which].num_goods += delta;
+	g->goods_in_play += delta;
+}
+
+/*
  * Return the number of cards in the draw deck.
+ *
+ * O(1) via the cache; real games re-derive it with a full scan and
+ * abort on any disagreement (the net that catches a bypassed
+ * card_set_where).
  */
 static int count_draw(game *g)
 {
 	card *c_ptr;
+	char msg[1024];
 	int i, n = 0;
+
+	/* Simulations trust the cache (playouts run thousands of draws) */
+	if (g->simulation) return g->deck_count;
 
 	/* Loop over cards */
 	for (i = 0; i < g->deck_size; i++)
@@ -210,6 +251,19 @@ static int count_draw(game *g)
 
 		/* Count cards in draw deck */
 		if (c_ptr->where == WHERE_DECK) n++;
+	}
+
+	/* The cache must agree with the scan */
+	if (n != g->deck_count)
+	{
+		/* Format evidence */
+		sprintf(msg, "Draw deck cache %d but scan finds %d!\n",
+		        g->deck_count, n);
+
+		/* This is a bug (a card.where write bypassed
+		 * card_set_where) */
+		display_error(msg);
+		abort();
 	}
 
 	/* Return count */
@@ -227,6 +281,10 @@ static int count_goods_in_play(game *g)
 	char msg[1024];
 	int i, n = 0;
 
+	/* Simulations trust the cache (playouts run thousands of draws;
+	 * this scan and count_draw's were 73% of AI cycles) */
+	if (g->simulation) return g->goods_in_play;
+
 	/* Loop over cards */
 	for (i = 0; i < g->deck_size; i++)
 	{
@@ -237,7 +295,7 @@ static int count_goods_in_play(game *g)
 		if (!c_ptr->num_goods) continue;
 
 		/* Goods live only on active worlds */
-		if (!g->simulation && c_ptr->where != WHERE_ACTIVE)
+		if (c_ptr->where != WHERE_ACTIVE)
 		{
 			/* Format evidence */
 			sprintf(msg, "%d goods on %s in zone %d!\n",
@@ -251,6 +309,19 @@ static int count_goods_in_play(game *g)
 
 		/* Count goods */
 		n += c_ptr->num_goods;
+	}
+
+	/* The cache must agree with the scan */
+	if (n != g->goods_in_play)
+	{
+		/* Format evidence */
+		sprintf(msg, "Goods-in-play cache %d but scan finds %d!\n",
+		        g->goods_in_play, n);
+
+		/* This is a bug (a num_goods write bypassed
+		 * card_add_goods) */
+		display_error(msg);
+		abort();
 	}
 
 	/* Return count */
@@ -498,7 +569,7 @@ static void refresh_draw(game *g)
 		if (c_ptr->where != WHERE_DISCARD) continue;
 
 		/* Move card to draw deck */
-		c_ptr->where = WHERE_DECK;
+		card_set_where(g, i, WHERE_DECK);
 
 		/* Card's location is no longer known to anyone */
 		c_ptr->misc &= ~MISC_KNOWN_MASK;
@@ -577,7 +648,7 @@ static int random_draw(game *g)
 	}
 
 	/* Clear chosen card's location */
-	c_ptr->where = -1;
+	card_set_where(g, i, -1);
 
 	/* Return chosen card */
 	return i;
@@ -711,7 +782,7 @@ static int campaign_draw(game *g, int who)
 		 * (init.c), and a raw location write would corrupt that
 		 * list -- move_card handles owned cards. */
 		else if (which != -1 && g->deck[which].owner == -1)
-			g->deck[which].where = -1;
+			card_set_where(g, which, -1);
 	}
 
 	/* Notify draw hook */
@@ -760,7 +831,7 @@ int first_draw(game *g)
 	}
 
 	/* Clear chosen card's location */
-	c_ptr->where = -1;
+	card_set_where(g, i, -1);
 
 	/* Check for just-emptied physical deck */
 	maybe_refresh(g);
@@ -827,7 +898,7 @@ void move_card(game *g, int which, int owner, int where)
 
 	/* Adjust location */
 	c_ptr->owner = owner;
-	c_ptr->where = where;
+	card_set_where(g, which, where);
 }
 
 /*
@@ -929,7 +1000,7 @@ int draw_card(game *g, int who, char *reason)
 		c_ptr = &g->deck[which];
 
 		/* Move card to discard to simulate deck cycling */
-		c_ptr->where = WHERE_DISCARD;
+		card_set_where(g, which, WHERE_DISCARD);
 
 		/* Done */
 		return which;
@@ -2002,7 +2073,7 @@ void add_good(game *g, int which)
 
 	/* Add the (identityless) good: no card leaves the deck, but the
 	 * good commits one physical-equivalent card */
-	c_ptr->num_goods++;
+	card_add_goods(g, which, 1);
 
 	/* Check for just-emptied physical deck */
 	maybe_refresh(g);
@@ -6480,7 +6551,7 @@ int upgrade_chosen(game *g, int who, int replacement, int old)
 		g->goods_departed += c_ptr->num_goods;
 
 		/* No more goods */
-		c_ptr->num_goods = 0;
+		card_add_goods(g, old, -c_ptr->num_goods);
 	}
 
 	/* Check for cards saved underneath world */
@@ -8259,7 +8330,7 @@ int resolve_takeover(game *g, int who, int world, int special,
 			g->goods_departed += c_ptr->num_goods;
 
 			/* World has no more goods */
-			c_ptr->num_goods = 0;
+			card_add_goods(g, world, -c_ptr->num_goods);
 		}
 
 		/* Discard card */
@@ -8870,7 +8941,7 @@ void trade_chosen(game *g, int who, int which, int no_bonus)
 
 	/* The good departs: its physical-equivalent card goes to the
 	 * physical discard pile until the next reshuffle */
-	c_ptr->num_goods--;
+	card_add_goods(g, which, -1);
 	g->goods_departed++;
 	if (spend_hook && !g->simulation) spend_hook(g, who, which);
 
@@ -9327,7 +9398,7 @@ int good_chosen(game *g, int who, int c_idx, int o_idx,
 
 		/* The good departs: its physical-equivalent card goes to
 		 * the physical discard pile until the next reshuffle */
-		c_ptr->num_goods--;
+		card_add_goods(g, g_list[i], -1);
 		g->goods_departed++;
 		if (spend_hook && !g->simulation)
 			spend_hook(g, who, g_list[i]);
@@ -11940,10 +12011,10 @@ void phase_produce_start(game *g)
 					}
 				}
 
-				/* Move goods to world */
-				g->deck[w_list[j].c_idx].num_goods +=
-					b_ptr->num_goods;
-				b_ptr->num_goods = 0;
+				/* Move goods to world (cache nets zero) */
+				card_add_goods(g, w_list[j].c_idx,
+				               b_ptr->num_goods);
+				card_add_goods(g, x, -b_ptr->num_goods);
 			}
 		}
 	}
@@ -13707,7 +13778,7 @@ picks_done:;
 
 			/* XXX Move card to discard */
 			c_ptr->owner = -1;
-			c_ptr->where = WHERE_DISCARD;
+			card_set_where(g, start_picks[i][0], WHERE_DISCARD);
 
 			/* Card is known to player */
 			c_ptr->misc |= (1 << i);
@@ -13729,7 +13800,7 @@ picks_done:;
 
 			/* XXX Move card to discard */
 			c_ptr->owner = -1;
-			c_ptr->where = WHERE_DISCARD;
+			card_set_where(g, start_picks[i][1], WHERE_DISCARD);
 
 			/* Card is known to player */
 			c_ptr->misc |= (1 << i);
@@ -13829,7 +13900,7 @@ picks_done:;
 			c_ptr = &g->deck[start[i]];
 
 			/* Temporarily move card to discard pile */
-			c_ptr->where = WHERE_DISCARD;
+			card_set_where(g, start[i], WHERE_DISCARD);
 		}
 
 		/* Loop over players */
@@ -13874,7 +13945,7 @@ picks_done:;
 			c_ptr = &g->deck[start[i]];
 
 			/* Move card back to deck */
-			c_ptr->where = WHERE_DECK;
+			card_set_where(g, start[i], WHERE_DECK);
 		}
 
 		/* Check for "draw four" campaign flag */
