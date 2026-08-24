@@ -700,6 +700,13 @@ static int campaign_draw(game *g, int who)
 
 		/* Check for random card */
 		if (which == -1) which = random_draw(g);
+
+		/* A pinned draw leaves the deck exactly like a random one
+		 * (random_draw clears the location): callers that hold the
+		 * card across further engine work before filing it -- the
+		 * Gambling World ante flips sit unfiled across the KEEP
+		 * ask -- must not see it still counted in the deck. */
+		else if (which != -1) g->deck[which].where = -1;
 	}
 
 	/* Notify draw hook */
