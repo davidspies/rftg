@@ -8214,6 +8214,20 @@ int resolve_takeover(game *g, int who, int world, int special,
 			message_add_formatted(g, msg, FORMAT_TAKEOVER);
 		}
 
+		/* Check for good on world: the goods depart the moment the
+		 * world leaves the tableau.  Departing only after
+		 * settle_bonus left a discarded card carrying goods across
+		 * the bonus draw, and the draw's reshuffle-formula pass
+		 * (count_goods_in_play) correctly aborts on that. */
+		if (c_ptr->num_goods)
+		{
+			/* The goods depart with the destroyed world */
+			g->goods_departed += c_ptr->num_goods;
+
+			/* World has no more goods */
+			c_ptr->num_goods = 0;
+		}
+
 		/* Discard card */
 		move_card(g, world, -1, WHERE_DISCARD);
 
@@ -8239,16 +8253,6 @@ int resolve_takeover(game *g, int who, int world, int special,
 					move_card(g, i, -1, WHERE_DISCARD);
 				}
 			}
-		}
-
-		/* Check for good on world */
-		if (c_ptr->num_goods)
-		{
-			/* The goods depart with the destroyed world */
-			g->goods_departed += c_ptr->num_goods;
-
-			/* World has no more goods */
-			c_ptr->num_goods = 0;
 		}
 
 		/* Success */
