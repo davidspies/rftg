@@ -1247,6 +1247,9 @@ void clear_temp(game *g)
 
 		/* Clear all temp misc flags */
 		c_ptr->misc &= MISC_TEMP_MASK;
+
+		/* Clear per-phase hand-military spend */
+		c_ptr->mh_spent = 0;
 	}
 
 	/* Loop over players */
@@ -5049,6 +5052,19 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 				{
 					/* Track amount fully spent */
 					hand_military_given -= o_ptr->value;
+
+					/* Keldon's convention: cards fill
+					 * powers greedily in list order (an
+					 * explicit boost record overwrites
+					 * this below). */
+					c_ptr->mh_spent = o_ptr->value;
+				}
+				else
+				{
+					/* Partial: the remaining given
+					 * cards land on this power */
+					c_ptr->mh_spent = (int8_t)hand_military_given;
+					hand_military_given = 0;
 				}
 
 				/* Mark power as used */
@@ -5256,6 +5272,15 @@ int settle_callback(game *g, int who, int which, int list[], int num,
 			}
 			if (sp_boost[i] < mh_value[i])
 				spent_partial += sp_boost[i];
+		}
+		/* The record's assignment is authoritative: overwrite the
+		 * greedy per-card attribution above (every MILITARY_HAND
+		 * special in the answer, zero-card uses included). */
+		for (i = 0; i < num_special; i++)
+		{
+			if (mh_value[i] > 0)
+				g->deck[special[i]].mh_spent =
+					(int8_t)sp_boost[i];
 		}
 		hand_military = boost_total;
 		p_ptr->bonus_military += boost_total;
@@ -7656,8 +7681,9 @@ int defend_callback(game *g, int who, int deficit, int list[], int num,
 				/* Mark power as used */
 				c_ptr->misc |= 1 << (MISC_USED_SHIFT + j);
 
-				/* Assume cards are for military strength */
-				hand_military += o_ptr->value;
+				/* Assume cards are for military strength
+				 * (remaining per-card capacity only) */
+				hand_military += o_ptr->value - c_ptr->mh_spent;
 			}
 
 			/* Check for consume to increase military */
@@ -7726,9 +7752,6 @@ int defend_callback(game *g, int who, int deficit, int list[], int num,
 			}
 		}
 	}
-
-	/* Reduce amount of hand military available */
-	hand_military -= p_ptr->hand_military_spent;
 
 	/* Check for too many cards passed */
 	if (num > hand_military) return 0;
@@ -7857,13 +7880,10 @@ static void defend_takeover(game *g, int who, int world, int attacker,
 	int list[MAX_DECK], special[MAX_DECK];
 	int n = 0, num_special = 0;
 	int max = 0, hand_military = 0, hand_size;
-	int i, x, amt;
+	int i, x;
 
 	/* Get player pointer */
 	p_ptr = &g->p[who];
-
-	/* Track amount of hand military spent this phase */
-	amt = p_ptr->hand_military_spent;
 
 	/* Start at first active card */
 	x = p_ptr->start_head[WHERE_ACTIVE];
@@ -7890,8 +7910,14 @@ static void defend_takeover(game *g, int who, int world, int attacker,
 			/* Check for military from hand power */
 			if (o_ptr->code & P3_MILITARY_HAND)
 			{
-				/* Check for not fully spent */
-				if (o_ptr->value > amt)
+				/* Check for not fully spent (per CARD:
+				 * only the power's own unspent capacity
+				 * comes back -- a fully spent power stays
+				 * used.  The old per-player aggregate
+				 * un-used fully spent powers whenever the
+				 * player's partial spend was smaller than
+				 * this power's value). */
+				if (o_ptr->value > c_ptr->mh_spent)
 				{
 					/* Remove used flag */
 					c_ptr->misc &= ~(1 <<
@@ -7929,8 +7955,11 @@ static void defend_takeover(game *g, int who, int world, int attacker,
 			/* Add to special list */
 			special[num_special++] = w_list[i].c_idx;
 
-			/* Track amount we can spend */
-			hand_military += o_ptr->value;
+			/* Track amount we can spend: the power's own
+			 * remaining capacity (an un-used partial keeps its
+			 * spend on the books) */
+			hand_military += o_ptr->value -
+			                 g->deck[w_list[i].c_idx].mh_spent;
 		}
 
 		/* Check for consume prestige for military */

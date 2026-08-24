@@ -741,6 +741,13 @@ typedef struct card
 	/* Number of goods placed on this card */
 	int8_t num_goods;
 
+	/* Hand cards spent on this card's MILITARY_HAND power this phase
+	 * (per-card, so the takeover-defense un-use pass restores exactly
+	 * the partially spent powers; cleared with the per-phase misc
+	 * bits).  Not serialized by loadsave (the replay/live pipelines
+	 * never load saves). */
+	int8_t mh_spent;
+
 	/* Order played on the table */
 	int8_t order;
 
