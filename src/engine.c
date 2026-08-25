@@ -7894,8 +7894,16 @@ int defend_callback(game *g, int who, int deficit, int list[], int num,
 				num_goods = get_goods(g, who, g_list, GOOD_RARE);
 			}
 
-			/* Check for needing alien good */
-			if (o_ptr->code & P3_CONSUME_ALIEN)
+			/* Check for needing alien good.  This must be an
+			 * else-if: as a bare if, its else swallowed the
+			 * CONSUME_RARE case above (dangling else), so a
+			 * Rare good was never consumed in defense while an
+			 * Alien one was.  The printed powers consume their
+			 * good wherever used (ruled 2026-08-10; the native
+			 * engine has consumed both kinds since then, and the
+			 * live mirror caught this divergence at
+			 * bow-6p-nw seed 1000305). */
+			else if (o_ptr->code & P3_CONSUME_ALIEN)
 			{
 				/* Get good list */
 				num_goods = get_goods(g, who, g_list, GOOD_ALIEN);
