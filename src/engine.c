@@ -6038,6 +6038,15 @@ static void pay_settle(game *g, int who, int world, int mil_only, int mil_bonus)
 		/* Track military spent */
 		p_ptr->military_spent += cost;
 
+		/* Card is now paid for: every other payment resolution
+		 * (settle_callback, zero-cost, no-payment) clears the flag;
+		 * this early return leaked it, leaving the conquered
+		 * world's goods invisible to has_good/count_goods for the
+		 * rest of the game (bow-2pa seed 1000432: Rebel Convict
+		 * Mines' Rare windfall hidden from Rebel Fuel Refinery's
+		 * CONSUME_RARE payment offer, 2026-08-25). */
+		c_ptr->misc &= ~MISC_UNPAID;
+
 		/* Message */
 		if (!g->simulation)
 		{
