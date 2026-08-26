@@ -601,8 +601,16 @@ static void maybe_refresh(game *g)
 		if (g->deck[i].where == WHERE_DISCARD) break;
 	}
 
-	/* Check for genuinely exhausted pool (dealing sites report) */
-	if (i == g->deck_size) return;
+	/* Check for genuinely exhausted pool (dealing sites report).
+	 * The PHYSICAL discard pile holds the discard-located cards PLUS
+	 * the departed goods' physical counterparts (their card objects
+	 * never left WHERE_DECK -- that is what physical_deck_count
+	 * subtracts).  Pre-counter-model, a consumed good's card sat in
+	 * WHERE_DISCARD and random_draw reshuffled it back in; in counter
+	 * coordinates that reshuffle is refresh_draw's goods_departed
+	 * reset.  Only an empty pile AND no departed goods is genuine
+	 * exhaustion. */
+	if (i == g->deck_size && !g->goods_departed) return;
 
 	/* Refresh draw deck */
 	refresh_draw(g);
