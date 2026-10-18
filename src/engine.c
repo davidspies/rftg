@@ -2685,12 +2685,12 @@ void phase_search(game *g)
 void phase_explore(game *g)
 {
 	player *p_ptr;
-	card *c_ptr;
 	power_where w_list[100];
 	power *o_ptr;
 	int i, j, x, n, draw, keep, drawn[MAX_PLAYER], kept[MAX_PLAYER];
 	int discard_any = 0, any[MAX_PLAYER];
 	int list[MAX_DECK], num;
+	int held[MAX_DECK] = {0};
 	char msg[1024];
 
 	/* Loop over players */
@@ -2800,6 +2800,20 @@ void phase_explore(game *g)
 			draw += o_ptr->value;
 		}
 
+		/* Mark the cards held before this draw: every other card in
+		 * hand at the discard below was dealt by this Explore. A card
+		 * that started the phase in hand, left it (a DISCARD_PRESTIGE
+		 * spend above), and was reshuffled and redrawn is part of the
+		 * draw like any other, so it is discardable (dspyz 2026-10-18:
+		 * "If it's drawn as part of the explore draw, it's discardable
+		 * as part of the explore draw"; the reference tested the card's
+		 * phase-start location, which called it held) */
+		for (x = p_ptr->head[WHERE_HAND]; x != -1; x = g->deck[x].next)
+		{
+			/* Card was in hand before the draw */
+			held[x] = 1;
+		}
+
 		/* Draw cards */
 		draw_cards(g, i, draw, "Explore");
 
@@ -2869,13 +2883,8 @@ void phase_explore(game *g)
 		/* Loop over cards */
 		for ( ; x != -1; x = g->deck[x].next)
 		{
-			/* Get card pointer */
-			c_ptr = &g->deck[x];
-
-			/* Skip cards already in hand unless discarding any */
-			if (c_ptr->start_where == WHERE_HAND &&
-			    c_ptr->start_owner == i && !discard_any)
-				continue;
+			/* Skip cards held before the draw unless discarding any */
+			if (held[x] && !discard_any) continue;
 
 			/* Add card to list */
 			list[num++] = x;
