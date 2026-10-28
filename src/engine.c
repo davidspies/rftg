@@ -13059,13 +13059,130 @@ void check_goal_loss(game *g, int who, int goal)
 }
 
 /*
+ * Settle one "most" goal now: recount every player's progress, take the
+ * goal from a holder below the leader or the minimum, and award it to a
+ * strict sole leader.  A tie with no holder among the tied stays
+ * unclaimed.  check_goals runs it after the phases that can change each
+ * goal; score_game runs it for most blue/brown once the Alien Oort Cloud
+ * Refinery's game-end kind is known.
+ */
+static void check_most_goal(game *g, int i)
+{
+	player *p_ptr;
+	int count[MAX_PLAYER], most;
+	int j, k;
+	char msg[1024];
+
+	/* Clear most progress */
+	g->goal_most[i] = 0;
+
+	/* Loop over each player */
+	for (j = 0; j < g->num_players; j++)
+	{
+		/* Get player's progress */
+		count[j] = check_goal_player(g, i, j);
+
+		/* Save progress */
+		g->p[j].goal_progress[i] = count[j];
+
+		/* Check for more than most */
+		if (count[j] > g->goal_most[i])
+		{
+			/* Remember most */
+			g->goal_most[i] = count[j];
+		}
+
+		/* Check for insufficient progress */
+		if (count[j] < goal_minimum(i)) count[j] = 0;
+	}
+
+	/* Check for losing goal */
+	for (j = 0; j < g->num_players; j++)
+	{
+		/* Get player pointer */
+		p_ptr = &g->p[j];
+
+		/* Check for goal claimed and lost */
+		if (p_ptr->goal_claimed[i] &&
+		    (!count[j] || count[j] < g->goal_most[i]))
+		{
+			/* Lose goal */
+			g->goal_avail[i] = 1;
+			p_ptr->goal_claimed[i] = 0;
+
+			/* Message */
+			if (!g->simulation)
+			{
+				/* Format message */
+				sprintf(msg, "%s loses %s goal.\n",
+				        p_ptr->name, goal_name[i]);
+
+				/* Send message */
+				message_add_formatted(g, msg, FORMAT_GOAL);
+			}
+		}
+	}
+
+	/* Loop over players */
+	for (j = 0; j < g->num_players; j++)
+	{
+		/* Assume this player has most */
+		most = 1;
+
+		/* Loop over opponents */
+		for (k = 0; k < g->num_players; k++)
+		{
+			/* Do not compete with ourself */
+			if (j == k) continue;
+
+			/* Check for no more than opponent */
+			if (count[j] <= count[k]) most = 0;
+		}
+
+		/* Get player pointer */
+		p_ptr = &g->p[j];
+
+		/* Check for more than anyone else */
+		if (most && !p_ptr->goal_claimed[i])
+		{
+			/* Goal is no longer available */
+			g->goal_avail[i] = 0;
+
+			/* Loop over players */
+			for (k = 0; k < g->num_players; k++)
+			{
+				/* Get player pointer */
+				p_ptr = &g->p[k];
+
+				/* Award card to player with most */
+				p_ptr->goal_claimed[i] = (j == k);
+			}
+
+			/* Message */
+			if (!g->simulation)
+			{
+				/* Get player pointer */
+				p_ptr = &g->p[j];
+
+				/* Format message */
+				sprintf(msg, "%s claims %s goal.\n",
+				        p_ptr->name, goal_name[i]);
+
+				/* Send message */
+				message_add_formatted(g, msg, FORMAT_GOAL);
+			}
+		}
+	}
+}
+
+/*
  * Award goals to players who meet requirements.
  */
 void check_goals(game *g)
 {
 	player *p_ptr;
-	int count[MAX_PLAYER], most;
-	int i, j, k;
+	int count[MAX_PLAYER];
+	int i, j;
 	char msg[1024];
 
 	/* Loop over "first" goals */
@@ -13223,106 +13340,8 @@ void check_goals(game *g)
 				break;
 		}
 
-		/* Clear most progress */
-		g->goal_most[i] = 0;
-
-		/* Loop over each player */
-		for (j = 0; j < g->num_players; j++)
-		{
-			/* Get player's progress */
-			count[j] = check_goal_player(g, i, j);
-
-			/* Save progress */
-			g->p[j].goal_progress[i] = count[j];
-
-			/* Check for more than most */
-			if (count[j] > g->goal_most[i])
-			{
-				/* Remember most */
-				g->goal_most[i] = count[j];
-			}
-
-			/* Check for insufficient progress */
-			if (count[j] < goal_minimum(i)) count[j] = 0;
-		}
-
-		/* Check for losing goal */
-		for (j = 0; j < g->num_players; j++)
-		{
-			/* Get player pointer */
-			p_ptr = &g->p[j];
-
-			/* Check for goal claimed and lost */
-			if (p_ptr->goal_claimed[i] &&
-			    (!count[j] || count[j] < g->goal_most[i]))
-			{
-				/* Lose goal */
-				g->goal_avail[i] = 1;
-				p_ptr->goal_claimed[i] = 0;
-
-				/* Message */
-				if (!g->simulation)
-				{
-					/* Format message */
-					sprintf(msg, "%s loses %s goal.\n",
-					        p_ptr->name, goal_name[i]);
-
-					/* Send message */
-					message_add_formatted(g, msg, FORMAT_GOAL);
-				}
-			}
-		}
-
-		/* Loop over players */
-		for (j = 0; j < g->num_players; j++)
-		{
-			/* Assume this player has most */
-			most = 1;
-
-			/* Loop over opponents */
-			for (k = 0; k < g->num_players; k++)
-			{
-				/* Do not compete with ourself */
-				if (j == k) continue;
-
-				/* Check for no more than opponent */
-				if (count[j] <= count[k]) most = 0;
-			}
-
-			/* Get player pointer */
-			p_ptr = &g->p[j];
-
-			/* Check for more than anyone else */
-			if (most && !p_ptr->goal_claimed[i])
-			{
-				/* Goal is no longer available */
-				g->goal_avail[i] = 0;
-
-				/* Loop over players */
-				for (k = 0; k < g->num_players; k++)
-				{
-					/* Get player pointer */
-					p_ptr = &g->p[k];
-
-					/* Award card to player with most */
-					p_ptr->goal_claimed[i] = (j == k);
-				}
-
-				/* Message */
-				if (!g->simulation)
-				{
-					/* Get player pointer */
-					p_ptr = &g->p[j];
-
-					/* Format message */
-					sprintf(msg, "%s claims %s goal.\n",
-					        p_ptr->name, goal_name[i]);
-
-					/* Send message */
-					message_add_formatted(g, msg, FORMAT_GOAL);
-				}
-			}
-		}
+		/* Settle this goal */
+		check_most_goal(g, i);
 	}
 }
 
@@ -15101,13 +15120,34 @@ static void score_game_player(game *g, int who)
 }
 
 /*
+ * Settle most blue/brown with the Alien Oort Cloud Refinery as the kind it
+ * is now (score_game).
+ */
+static void settle_oort_goal(game *g)
+{
+	/* Skip inactive goal */
+	if (!g->goal_active[GOAL_MOST_BLUE_BROWN]) return;
+
+	/* Settle goal */
+	check_most_goal(g, GOAL_MOST_BLUE_BROWN);
+}
+
+/*
  * Handle end-game scoring.
+ *
+ * The Alien Oort Cloud Refinery's owner takes the kind with the best total
+ * for themselves (the first kind on a tie), and every player is scored
+ * with most blue/brown settled for the refinery as only that kind: a
+ * strict leader takes the goal, the holder keeps a tie, and players tied
+ * for the most without it score the tie points (dspyz 2026-10-28).  The
+ * settlement happens on a copy, so the AI and the GUI can score a game in
+ * progress without changing it.
  */
 void score_game(game *g)
 {
 	game sim;
-	player *p_ptr;
 	card *c_ptr;
+	char msg[1024];
 	int i, j, b_s = -999;
 	int oort_owner = -1;
 
@@ -15127,58 +15167,90 @@ void score_game(game *g)
 		oort_owner = c_ptr->owner;
 	}
 
-	/* Loop over players */
-	for (i = 0; i < g->num_players; i++)
+	/* Check for no owner of "any" good type */
+	if (oort_owner == -1)
 	{
-		/* Get player pointer */
-		p_ptr = &g->p[i];
-
-		/* Start with no goal points */
-		p_ptr->goal_vp = 0;
-
-		/* Check for owner of "any" good type */
-		if (i == oort_owner)
-		{
-			/* Loop over available good types */
-			for (j = GOOD_NOVELTY; j <= GOOD_ALIEN; j++)
-			{
-				/* Simulate game */
-				sim = *g;
-
-				/* Mark game as simulation */
-				sim.simulation = 1;
-
-				/* Try this kind of world */
-				sim.oort_kind = j;
-
-				/* Check goal loss */
-				check_goal_loss(&sim, i, GOAL_MOST_BLUE_BROWN);
-
-				/* Score game for this player */
-				score_game_player(&sim, i);
-
-				/* Check for better score than before */
-				if (sim.p[i].end_vp > b_s)
-				{
-					/* Remember best score */
-					b_s = sim.p[i].end_vp;
-
-					/* Remember best selection of kind */
-					g->best_oort_kind = j;
-
-					/* Remember goal score */
-					g->p[i].goal_vp = sim.p[i].goal_vp;
-				}
-			}
-
-			/* Set score to score from best type */
-			p_ptr->end_vp = b_s;
-		}
-		else
+		/* Loop over players */
+		for (i = 0; i < g->num_players; i++)
 		{
 			/* Score points for active cards */
 			score_game_player(g, i);
 		}
+
+		/* Done */
+		return;
+	}
+
+	/* Check for a kind already chosen */
+	if (g->oort_kind != GOOD_ANY)
+	{
+		/* Format evidence */
+		sprintf(msg, "Scoring with the Oort kind already %d!\n",
+		        g->oort_kind);
+
+		/* This is a bug (a temporary kind was not reset) */
+		display_error(msg);
+		abort();
+	}
+
+	/* Loop over available good types */
+	for (j = GOOD_NOVELTY; j <= GOOD_ALIEN; j++)
+	{
+		/* Simulate game */
+		sim = *g;
+
+		/* Mark game as simulation */
+		sim.simulation = 1;
+
+		/* Try this kind of world */
+		sim.oort_kind = j;
+
+		/* Settle most blue/brown with this kind */
+		settle_oort_goal(&sim);
+
+		/* Score game for the owner */
+		score_game_player(&sim, oort_owner);
+
+		/* Check for better score than before */
+		if (sim.p[oort_owner].end_vp > b_s)
+		{
+			/* Remember best score */
+			b_s = sim.p[oort_owner].end_vp;
+
+			/* Remember best selection of kind */
+			g->best_oort_kind = j;
+		}
+	}
+
+	/* Simulate the chosen kind */
+	sim = *g;
+	sim.simulation = 1;
+	sim.oort_kind = g->best_oort_kind;
+
+	/* Settle most blue/brown with the chosen kind */
+	settle_oort_goal(&sim);
+
+	/* Loop over players */
+	for (i = 0; i < g->num_players; i++)
+	{
+		/* Score points for active cards */
+		score_game_player(&sim, i);
+
+		/* Copy score */
+		g->p[i].end_vp = sim.p[i].end_vp;
+		g->p[i].goal_vp = sim.p[i].goal_vp;
+	}
+
+	/* Check the owner scores the total its kind was chosen for */
+	if (g->p[oort_owner].end_vp != b_s)
+	{
+		/* Format evidence */
+		sprintf(msg, "Oort owner scores %d but its kind was chosen "
+		        "for %d!\n", g->p[oort_owner].end_vp, b_s);
+
+		/* This is a bug (the settlement differs from its trial) */
+		display_error(msg);
+		abort();
 	}
 }
 
