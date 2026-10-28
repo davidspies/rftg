@@ -506,6 +506,21 @@ void (*refresh_hook)(game *g) = NULL;
 void (*phase_hook)(game *g) = NULL;
 
 /*
+ * Called after every phase-end goal check, with the phase's label: the
+ * oracle traces each check's goal state (oracle/TRACE_FORMAT.md).
+ */
+void (*goals_hook)(game *g, const char *phase) = NULL;
+
+/*
+ * Report a finished goal check to the goals hook.
+ */
+static void goals_checked(game *g, const char *phase)
+{
+	/* Report real games only */
+	if (goals_hook && !g->simulation) goals_hook(g, phase);
+}
+
+/*
  * Hook called (real games only) when a consume power is used, asked or
  * automatic (c_idx < 0 is the prestige Consume-Trade bonus).
  */
@@ -1298,8 +1313,10 @@ void start_prestige(game *g)
 	/* Clear temp flags on card just drawn */
 	clear_temp(g);
 
-	/* Check intermediate goals */
+	/* Check goals: the prestige bonuses are a phase of their own,
+	 * before action selection (dspyz 2026-10-28) */
 	check_goals(g);
+	goals_checked(g, "prestige_leader");
 }
 
 /*
@@ -2954,6 +2971,7 @@ void phase_explore(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "explore");
 
 	/* Check prestige leader */
 	check_prestige(g);
@@ -3929,6 +3947,7 @@ void phase_develop(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "develop");
 
 	/* Check prestige leader */
 	check_prestige(g);
@@ -8823,6 +8842,7 @@ void phase_settle(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "settle");
 
 	/* Check prestige leader */
 	check_prestige(g);
@@ -8992,9 +9012,6 @@ void trade_chosen(game *g, int who, int which, int no_bonus)
 		/* Check for aborted game */
 		if (g->game_over) return;
 
-		/* Set kind */
-		g->oort_kind = type;
-
 		/* Message */
 		if (!g->simulation)
 		{
@@ -9006,11 +9023,9 @@ void trade_chosen(game *g, int who, int which, int no_bonus)
 			message_add_formatted(g, msg, FORMAT_VERBOSE);
 		}
 
-		/* Check goal loss */
-		check_goal_loss(g, who, GOAL_MOST_BLUE_BROWN);
-
-		/* Reset kind to any */
-		g->oort_kind = GOOD_ANY;
+		/* The kind only prices this trade: goals are checked at the
+		 * end of a phase, and for them the refinery stays every kind
+		 * until its game-end choice (dspyz 2026-10-28) */
 	}
 
 	/* Compute trade value */
@@ -10803,6 +10818,7 @@ void phase_consume(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "consume");
 
 	/* Check prestige leader */
 	check_prestige(g);
@@ -10888,11 +10904,8 @@ void produce_world(game *g, int who, int which, int c_idx, int o_idx)
 			/* Check for aborted game */
 			if (g->game_over) return;
 
-			/* Set kind on world */
+			/* Set kind on world: produce bonuses count this kind */
 			SET_PRODUCED(c_ptr, kind);
-
-			/* Set kind */
-			g->oort_kind = kind;
 
 			/* Message */
 			if (!g->simulation)
@@ -10906,11 +10919,9 @@ void produce_world(game *g, int who, int which, int c_idx, int o_idx)
 				message_add_formatted(g, msg, FORMAT_VERBOSE);
 			}
 
-			/* Check goal loss */
-			check_goal_loss(g, who, GOAL_MOST_BLUE_BROWN);
-
-			/* Reset kind to any */
-			g->oort_kind = GOOD_ANY;
+			/* Goals are checked at the end of a phase, and for them
+			 * the refinery stays every kind until its game-end choice
+			 * (dspyz 2026-10-28) */
 		}
 	}
 
@@ -12278,6 +12289,7 @@ void phase_produce(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "produce");
 
 	/* Check prestige leader */
 	check_prestige(g);
@@ -14092,6 +14104,7 @@ picks_done:;
 	/* XXX Pretend settle phase to set goal progress properly */
 	g->cur_action = ACT_SETTLE;
 	check_goals(g);
+	goals_checked(g, "game_start");
 	g->cur_action = ACT_ROUND_START;
 
 	/* Game is starting */
@@ -14425,6 +14438,12 @@ int game_round(game *g)
 	/* Note actions selected by players */
 	note_actions(g);
 
+	/* Check goals: action selection is a phase of its own, through the
+	 * reveal, the select-last choice and the prestige action payments
+	 * (dspyz 2026-10-28) */
+	check_goals(g);
+	goals_checked(g, "action_selection");
+
 	/* Loop over actions in order */
 	for (i = ACT_SEARCH; i <= ACT_PRODUCE; i++)
 	{
@@ -14521,6 +14540,7 @@ int game_round(game *g)
 
 	/* Check intermediate goals */
 	check_goals(g);
+	goals_checked(g, "round_end");
 
 	/* Check for out of VPs */
 	if (g->vp_pool <= 0) g->game_over = 1;
@@ -15133,23 +15153,12 @@ static void settle_oort_goal(game *g)
 }
 
 /*
- * Handle end-game scoring.
- *
- * The Alien Oort Cloud Refinery's owner takes the kind with the best total
- * for themselves (the first kind on a tie), and every player is scored
- * with most blue/brown settled for the refinery as only that kind: a
- * strict leader takes the goal, the holder keeps a tie, and players tied
- * for the most without it score the tie points (dspyz 2026-10-28).  The
- * settlement happens on a copy, so the AI and the GUI can score a game in
- * progress without changing it.
+ * Return the owner of the active Alien Oort Cloud Refinery, or -1.
  */
-void score_game(game *g)
+static int oort_owner_of(game *g)
 {
-	game sim;
 	card *c_ptr;
-	char msg[1024];
-	int i, j, b_s = -999;
-	int oort_owner = -1;
+	int i, oort_owner = -1;
 
 	/* Loop over cards in deck */
 	for (i = 0; i < g->deck_size; i++)
@@ -15166,6 +15175,52 @@ void score_game(game *g)
 		/* Remember owner of card */
 		oort_owner = c_ptr->owner;
 	}
+
+	/* Return owner */
+	return oort_owner;
+}
+
+/*
+ * Copy the game final scoring reads: most blue/brown settled with the
+ * Alien Oort Cloud Refinery as the kind score_game chose for its owner,
+ * or the game unchanged when no one owns the refinery.  Call after
+ * score_game.
+ */
+void final_goal_state(game *g, game *out)
+{
+	/* Copy game */
+	*out = *g;
+
+	/* Mark copy as simulation */
+	out->simulation = 1;
+
+	/* Check for no owner of "any" good type */
+	if (oort_owner_of(g) == -1) return;
+
+	/* The refinery is the chosen kind */
+	out->oort_kind = g->best_oort_kind;
+
+	/* Settle most blue/brown with the chosen kind */
+	settle_oort_goal(out);
+}
+
+/*
+ * Handle end-game scoring.
+ *
+ * The Alien Oort Cloud Refinery's owner takes the kind with the best total
+ * for themselves (the first kind on a tie), and every player is scored
+ * with most blue/brown settled for the refinery as only that kind: a
+ * strict leader takes the goal, the holder keeps a tie, and players tied
+ * for the most without it score the tie points (dspyz 2026-10-28).  The
+ * settlement happens on a copy (final_goal_state), so the AI and the GUI
+ * can score a game in progress without changing it.
+ */
+void score_game(game *g)
+{
+	game sim;
+	char msg[1024];
+	int i, j, b_s = -999;
+	int oort_owner = oort_owner_of(g);
 
 	/* Check for no owner of "any" good type */
 	if (oort_owner == -1)
@@ -15223,12 +15278,7 @@ void score_game(game *g)
 	}
 
 	/* Simulate the chosen kind */
-	sim = *g;
-	sim.simulation = 1;
-	sim.oort_kind = g->best_oort_kind;
-
-	/* Settle most blue/brown with the chosen kind */
-	settle_oort_goal(&sim);
+	final_goal_state(g, &sim);
 
 	/* Loop over players */
 	for (i = 0; i < g->num_players; i++)

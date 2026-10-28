@@ -1178,6 +1178,7 @@ extern void (*draw_hook)(game *g, int who, int which);
 extern void (*good_hook)(game *g, int world);
 extern void (*refresh_hook)(game *g);
 extern void (*phase_hook)(game *g);
+extern void (*goals_hook)(game *g, const char *phase);
 extern void (*consume_hook)(game *g, int who, int c_idx, int o_idx);
 extern void (*spend_hook)(game *g, int who, int world);
 extern int (*settle_boost_hook)(game *g, int who, int which, int list[],
@@ -1295,6 +1296,7 @@ extern void check_goals(game *g);
 extern int total_military(game *g, int who);
 extern int get_score_bonus(game *g, int who, int which);
 extern void score_game(game *g);
+extern void final_goal_state(game *g, game *out);
 extern char *action_name(int act);
 extern int start_callback(game *g, int who, int list[], int n, int special[],
                           int num_special);
